@@ -46,6 +46,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     stub(BB.Process, :call, fn _robot, _name, _msg -> :ok end)
     stub(BB.Process, :cast, fn _robot, _name, _msg -> :ok end)
     stub(BB, :subscribe, fn _robot, _path -> :ok end)
+    stub(BB.Safety, :armed?, fn _robot -> true end)
   end
 
   describe "init/1" do

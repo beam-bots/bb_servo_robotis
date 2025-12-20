@@ -40,6 +40,9 @@ defmodule BB.Servo.Robotis.Controller do
   - `:control_table` - The servo control table to use (default: `:xm430`)
   - `:poll_interval_ms` - Position feedback interval in ms (default: 50, i.e. 20Hz)
   - `:status_poll_interval_ms` - Status polling interval in ms (default: 1000, set to 0 to disable)
+  - `:disarm_action` - Action to take when robot is disarmed (default: `:disable_torque`)
+    - `:disable_torque` - Disable torque on all servos (safe default)
+    - `:hold` - Keep torque enabled (servos hold position)
 
   ## Status Polling
 
@@ -64,13 +67,20 @@ defmodule BB.Servo.Robotis.Controller do
   @position_resolution 4096
 
   @doc """
-  Disable torque on all servos by sync_writing torque_enable to false.
+  Handle disarm based on the configured `disarm_action`.
 
   Called by `BB.Safety.Controller` when the robot is disarmed or crashes.
-  This callback attempts to disable torque on all registered servo IDs.
+  By default, disables torque on all registered servo IDs.
   """
   @impl BB.Controller
   def disarm(opts) do
+    disarm_action = Keyword.get(opts, :disarm_action, :disable_torque)
+    do_disarm(disarm_action, opts)
+  end
+
+  defp do_disarm(:hold, _opts), do: :ok
+
+  defp do_disarm(:disable_torque, opts) do
     robotis = Keyword.fetch!(opts, :robotis)
     servo_ids = Keyword.get(opts, :servo_ids, [])
 
@@ -113,6 +123,11 @@ defmodule BB.Servo.Robotis.Controller do
         type: :non_neg_integer,
         doc: "Status polling interval in milliseconds (0 to disable)",
         default: 1000
+      ],
+      disarm_action: [
+        type: {:in, [:disable_torque, :hold]},
+        doc: "Action to take when robot is disarmed",
+        default: :disable_torque
       ]
     )
   end
@@ -123,6 +138,7 @@ defmodule BB.Servo.Robotis.Controller do
     control_table = Keyword.get(opts, :control_table, :xm430)
     poll_interval_ms = Keyword.get(opts, :poll_interval_ms, 50)
     status_poll_interval_ms = Keyword.get(opts, :status_poll_interval_ms, 1000)
+    disarm_action = Keyword.get(opts, :disarm_action, :disable_torque)
 
     case start_robotis(opts) do
       {:ok, robotis} ->
@@ -133,6 +149,7 @@ defmodule BB.Servo.Robotis.Controller do
           name: List.last(bb.path),
           poll_interval_ms: poll_interval_ms,
           status_poll_interval_ms: status_poll_interval_ms,
+          disarm_action: disarm_action,
           # servo_id -> %{joint_name: atom, center_angle: float, last_position_raw: integer | nil}
           servo_registry: %{},
           # servo_id -> %{temperature: float, voltage: float, current: float, hardware_error: integer | nil}
@@ -142,7 +159,7 @@ defmodule BB.Servo.Robotis.Controller do
         BB.Safety.register(__MODULE__,
           robot: state.bb.robot,
           path: state.bb.path,
-          opts: [robotis: state.robotis, servo_ids: []]
+          opts: [robotis: state.robotis, servo_ids: [], disarm_action: state.disarm_action]
         )
 
         # Subscribe to state machine transitions for arm/disarm
@@ -185,7 +202,11 @@ defmodule BB.Servo.Robotis.Controller do
     BB.Safety.register(__MODULE__,
       robot: state.bb.robot,
       path: state.bb.path,
-      opts: [robotis: state.robotis, servo_ids: Map.keys(new_registry)]
+      opts: [
+        robotis: state.robotis,
+        servo_ids: Map.keys(new_registry),
+        disarm_action: state.disarm_action
+      ]
     )
 
     {:reply, :ok, %{state | servo_registry: new_registry}}

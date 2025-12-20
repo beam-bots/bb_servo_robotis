@@ -199,19 +199,30 @@ defmodule BB.Servo.Robotis.Actuator do
 
   @impl GenServer
   def handle_info({:bb, _path, %Message{payload: %Command.Position{} = cmd}}, state) do
-    {:noreply, state} = do_set_position(cmd.position, cmd.command_id, state)
-    {:noreply, state}
+    if BB.Safety.armed?(state.bb.robot) do
+      {:noreply, _state} = do_set_position(cmd.position, cmd.command_id, state)
+    else
+      {:noreply, state}
+    end
   end
 
   @impl GenServer
   def handle_cast({:command, %Message{payload: %Command.Position{} = cmd}}, state) do
-    do_set_position(cmd.position, cmd.command_id, state)
+    if BB.Safety.armed?(state.bb.robot) do
+      do_set_position(cmd.position, cmd.command_id, state)
+    else
+      {:noreply, state}
+    end
   end
 
   @impl GenServer
   def handle_call({:command, %Message{payload: %Command.Position{} = cmd}}, _from, state) do
-    {:noreply, new_state} = do_set_position(cmd.position, cmd.command_id, state)
-    {:reply, {:ok, :accepted}, new_state}
+    if BB.Safety.armed?(state.bb.robot) do
+      {:noreply, new_state} = do_set_position(cmd.position, cmd.command_id, state)
+      {:reply, {:ok, :accepted}, new_state}
+    else
+      {:reply, {:error, :not_armed}, state}
+    end
   end
 
   defp do_set_position(angle, command_id, state) when is_integer(angle),

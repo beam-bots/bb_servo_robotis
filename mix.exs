@@ -67,7 +67,7 @@ defmodule BB.Servo.Robotis.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bb, path: "../bb"},
+      {:bb, "~> 0.7"},
       {:robotis, path: "../robotis"},
 
       # dev/test
