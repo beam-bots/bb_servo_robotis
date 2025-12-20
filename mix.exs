@@ -68,7 +68,7 @@ defmodule BB.Servo.Robotis.MixProject do
   defp deps do
     [
       {:bb, "~> 0.7"},
-      {:robotis, path: "../robotis"},
+      {:robotis, github: "beam-bots/robotis", branch: "main"},
 
       # dev/test
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
