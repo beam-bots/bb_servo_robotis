@@ -526,7 +526,13 @@ defmodule BB.Servo.Robotis.Controller do
   defp maybe_report_hardware_error(_state, _servo_id, _status, _last), do: :ok
 
   defp report_hardware_error(state, servo_id, error) do
-    path = state.bb.path ++ [:servo, servo_id]
+    joint_name =
+      case Map.get(state.servo_registry, servo_id) do
+        %{joint_name: name} -> name
+        nil -> String.to_atom("servo_#{servo_id}")
+      end
+
+    path = state.bb.path ++ [joint_name]
     BB.Safety.report_error(state.bb.robot, path, {:hardware_error, error})
   end
 

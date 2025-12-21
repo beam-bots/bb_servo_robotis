@@ -68,6 +68,28 @@ defmodule BB.Servo.Robotis.Bridge do
     {:ok, state}
   end
 
+  @impl GenServer
+  def handle_call(:list_remote, _from, state) do
+    case list_remote(state) do
+      {:ok, params, state} -> {:reply, {:ok, params}, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:get_remote, param_id}, _from, state) do
+    case get_remote(param_id, state) do
+      {:ok, value, state} -> {:reply, {:ok, value}, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:set_remote, param_id, value}, _from, state) do
+    case set_remote(param_id, value, state) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl BB.Bridge
   def handle_change(_robot, _changed, state) do
     # This bridge is primarily inbound (reading from servos)

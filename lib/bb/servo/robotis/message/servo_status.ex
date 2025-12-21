@@ -51,9 +51,9 @@ defmodule BB.Servo.Robotis.Message.ServoStatus do
   use BB.Message,
     schema: [
       servo_id: [type: :pos_integer, required: true, doc: "Servo ID (1-253)"],
-      temperature: [type: :float, required: true, doc: "Temperature in Celsius"],
-      voltage: [type: :float, required: true, doc: "Input voltage in Volts"],
-      current: [type: :float, required: true, doc: "Current draw in Amps"],
+      temperature: [type: :number, required: true, doc: "Temperature in Celsius"],
+      voltage: [type: :number, required: true, doc: "Input voltage in Volts"],
+      current: [type: :number, required: true, doc: "Current draw in Amps"],
       hardware_error: [
         type: {:or, [:non_neg_integer, {:literal, nil}]},
         default: nil,
@@ -63,9 +63,9 @@ defmodule BB.Servo.Robotis.Message.ServoStatus do
 
   @type t :: %__MODULE__{
           servo_id: pos_integer(),
-          temperature: float(),
-          voltage: float(),
-          current: float(),
+          temperature: number(),
+          voltage: number(),
+          current: number(),
           hardware_error: non_neg_integer() | nil
         }
 end
