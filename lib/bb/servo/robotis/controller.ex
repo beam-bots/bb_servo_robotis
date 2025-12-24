@@ -4,7 +4,7 @@
 
 defmodule BB.Servo.Robotis.Controller do
   @moduledoc """
-  A controller GenServer that manages a Robotis/Dynamixel servo bus.
+  A controller that manages a Robotis/Dynamixel servo bus.
 
   This controller wraps the `Robotis` GenServer and provides an interface
   for actuators to communicate with servos via the serial bus. Multiple
@@ -55,7 +55,39 @@ defmodule BB.Servo.Robotis.Controller do
   This controller implements the `BB.Safety` behaviour. When the robot is disarmed
   or crashes, torque is disabled on all known servo IDs using sync_write for speed.
   """
-  use BB.Controller
+  use BB.Controller,
+    options_schema: [
+      port: [
+        type: :string,
+        doc: "The serial port path (e.g., \"/dev/ttyUSB0\")",
+        required: true
+      ],
+      baud_rate: [
+        type: :pos_integer,
+        doc: "Baud rate in bps",
+        default: 57_600
+      ],
+      control_table: [
+        type: {:in, [:xl330_m288, :xm430, :xl320]},
+        doc: "The servo control table to use",
+        default: :xm430
+      ],
+      poll_interval_ms: [
+        type: :pos_integer,
+        doc: "Position feedback polling interval in milliseconds",
+        default: 50
+      ],
+      status_poll_interval_ms: [
+        type: :non_neg_integer,
+        doc: "Status polling interval in milliseconds (0 to disable)",
+        default: 1000
+      ],
+      disarm_action: [
+        type: {:in, [:disable_torque, :hold]},
+        doc: "Action to take when robot is disarmed",
+        default: :disable_torque
+      ]
+    ]
 
   require Logger
 
@@ -97,42 +129,6 @@ defmodule BB.Servo.Robotis.Controller do
   end
 
   @impl BB.Controller
-  def options_schema do
-    Spark.Options.new!(
-      port: [
-        type: :string,
-        doc: "The serial port path (e.g., \"/dev/ttyUSB0\")",
-        required: true
-      ],
-      baud_rate: [
-        type: :pos_integer,
-        doc: "Baud rate in bps",
-        default: 57_600
-      ],
-      control_table: [
-        type: {:in, [:xl330_m288, :xm430, :xl320]},
-        doc: "The servo control table to use",
-        default: :xm430
-      ],
-      poll_interval_ms: [
-        type: :pos_integer,
-        doc: "Position feedback polling interval in milliseconds",
-        default: 50
-      ],
-      status_poll_interval_ms: [
-        type: :non_neg_integer,
-        doc: "Status polling interval in milliseconds (0 to disable)",
-        default: 1000
-      ],
-      disarm_action: [
-        type: {:in, [:disable_torque, :hold]},
-        doc: "Action to take when robot is disarmed",
-        default: :disable_torque
-      ]
-    )
-  end
-
-  @impl GenServer
   def init(opts) do
     bb = Keyword.fetch!(opts, :bb)
     control_table = Keyword.get(opts, :control_table, :xm430)
@@ -183,7 +179,7 @@ defmodule BB.Servo.Robotis.Controller do
     )
   end
 
-  @impl GenServer
+  @impl BB.Controller
   def handle_call(
         {:register_servo, servo_id, joint_name, center_angle, position_deadband, reverse?},
         _from,
@@ -255,7 +251,7 @@ defmodule BB.Servo.Robotis.Controller do
     {:reply, {:ok, state.control_table}, state}
   end
 
-  @impl GenServer
+  @impl BB.Controller
   def handle_cast({:write, servo_id, param, value}, state) do
     Robotis.write(state.robotis, servo_id, param, value, false)
     {:noreply, state}
@@ -271,7 +267,7 @@ defmodule BB.Servo.Robotis.Controller do
     {:noreply, state}
   end
 
-  @impl GenServer
+  @impl BB.Controller
   def handle_info(:start_polling, state) do
     schedule_poll(state.poll_interval_ms)
     schedule_status_poll(state.status_poll_interval_ms)
@@ -536,7 +532,7 @@ defmodule BB.Servo.Robotis.Controller do
     BB.Safety.report_error(state.bb.robot, path, {:hardware_error, error})
   end
 
-  @impl GenServer
+  @impl BB.Controller
   def terminate(_reason, state) do
     if Process.alive?(state.robotis) do
       GenServer.stop(state.robotis)
