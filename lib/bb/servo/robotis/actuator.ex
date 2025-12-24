@@ -4,7 +4,7 @@
 
 defmodule BB.Servo.Robotis.Actuator do
   @moduledoc """
-  An actuator GenServer that uses a Robotis controller to drive a Dynamixel servo.
+  An actuator that uses a Robotis controller to drive a Dynamixel servo.
 
   This actuator derives its configuration from the joint constraints defined in the robot:
   - Position limits from `joint.limits.lower` and `joint.limits.upper`
@@ -37,30 +37,8 @@ defmodule BB.Servo.Robotis.Actuator do
         actuator :servo, {BB.Servo.Robotis.Actuator, servo_id: 1, controller: :dynamixel}
       end
   """
-  use BB.Actuator
-
-  alias BB.Message
-  alias BB.Message.Actuator.BeginMotion
-  alias BB.Message.Actuator.Command
-  alias BB.Process, as: BBProcess
-
-  @position_resolution 4096
-  @position_center 2048
-
-  @doc """
-  Safety disarm callback.
-
-  Returns :ok because torque management is handled by the controller.
-  The controller receives all registered servo IDs and disables torque
-  for all of them in a single sync_write operation, which is more
-  efficient for bus-based protocols.
-  """
-  @impl BB.Actuator
-  def disarm(_opts), do: :ok
-
-  @impl BB.Actuator
-  def options_schema do
-    Spark.Options.new!(
+  use BB.Actuator,
+    options_schema: [
       servo_id: [
         type: {:in, 1..253},
         doc: "The Dynamixel servo ID (1-253)",
@@ -82,10 +60,28 @@ defmodule BB.Servo.Robotis.Actuator do
           "Minimum position change (raw units) to trigger feedback publish. Filters servo noise.",
         default: 2
       ]
-    )
-  end
+    ]
 
-  @impl GenServer
+  alias BB.Message
+  alias BB.Message.Actuator.BeginMotion
+  alias BB.Message.Actuator.Command
+  alias BB.Process, as: BBProcess
+
+  @position_resolution 4096
+  @position_center 2048
+
+  @doc """
+  Safety disarm callback.
+
+  Returns :ok because torque management is handled by the controller.
+  The controller receives all registered servo IDs and disables torque
+  for all of them in a single sync_write operation, which is more
+  efficient for bus-based protocols.
+  """
+  @impl BB.Actuator
+  def disarm(_opts), do: :ok
+
+  @impl BB.Actuator
   def init(opts) do
     with {:ok, state} <- build_state(opts),
          :ok <- disable_torque(state),
@@ -197,7 +193,7 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
-  @impl GenServer
+  @impl BB.Actuator
   def handle_info({:bb, _path, %Message{payload: %Command.Position{} = cmd}}, state) do
     if BB.Safety.armed?(state.bb.robot) do
       {:noreply, _state} = do_set_position(cmd.position, cmd.command_id, state)
@@ -206,7 +202,7 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
-  @impl GenServer
+  @impl BB.Actuator
   def handle_cast({:command, %Message{payload: %Command.Position{} = cmd}}, state) do
     if BB.Safety.armed?(state.bb.robot) do
       do_set_position(cmd.position, cmd.command_id, state)
@@ -215,7 +211,7 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
-  @impl GenServer
+  @impl BB.Actuator
   def handle_call({:command, %Message{payload: %Command.Position{} = cmd}}, _from, state) do
     if BB.Safety.armed?(state.bb.robot) do
       {:noreply, new_state} = do_set_position(cmd.position, cmd.command_id, state)

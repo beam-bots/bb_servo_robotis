@@ -70,10 +70,8 @@ defmodule BB.Servo.Robotis.Bridge do
 
   @impl GenServer
   def handle_call(:list_remote, _from, state) do
-    case list_remote(state) do
-      {:ok, params, state} -> {:reply, {:ok, params}, state}
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
-    end
+    {:ok, params, state} = list_remote(state)
+    {:reply, {:ok, params}, state}
   end
 
   def handle_call({:get_remote, param_id}, _from, state) do
