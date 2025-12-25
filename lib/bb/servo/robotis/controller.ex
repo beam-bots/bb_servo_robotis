@@ -91,6 +91,7 @@ defmodule BB.Servo.Robotis.Controller do
 
   require Logger
 
+  alias BB.Error.Protocol.Robotis.HardwareAlert
   alias BB.Message
   alias BB.Message.Sensor.JointState
   alias BB.Servo.Robotis.Message.ServoStatus
@@ -529,7 +530,8 @@ defmodule BB.Servo.Robotis.Controller do
       end
 
     path = state.bb.path ++ [joint_name]
-    BB.Safety.report_error(state.bb.robot, path, {:hardware_error, error})
+    alert = HardwareAlert.from_bits(servo_id, error)
+    BB.Safety.report_error(state.bb.robot, path, alert)
   end
 
   @impl BB.Controller
