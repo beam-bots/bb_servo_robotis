@@ -18,7 +18,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
   """
 
   @type category :: :info | :config | :control
-  @type control_table :: :xm430 | :xl330_m288 | :xl320
+  @type control_table :: module
 
   @type param_info :: %{
           category: category(),

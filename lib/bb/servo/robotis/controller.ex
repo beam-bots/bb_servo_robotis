@@ -29,7 +29,7 @@ defmodule BB.Servo.Robotis.Controller do
       controller :dynamixel, {BB.Servo.Robotis.Controller,
         port: "/dev/ttyUSB0",
         baud_rate: 1_000_000,
-        control_table: :xm430,
+        control_table: Robotis.ControlTable.XM430,
         poll_interval_ms: 50
       }
 
@@ -37,7 +37,7 @@ defmodule BB.Servo.Robotis.Controller do
 
   - `:port` - (required) The serial port path, e.g., `"/dev/ttyUSB0"`
   - `:baud_rate` - Baud rate in bps (default: 57600)
-  - `:control_table` - The servo control table to use (default: `:xm430`)
+  - `:control_table` - The servo control table to use (default: `Robotis.ControlTable.XM430`)
   - `:poll_interval_ms` - Position feedback interval in ms (default: 50, i.e. 20Hz)
   - `:status_poll_interval_ms` - Status polling interval in ms (default: 1000, set to 0 to disable)
   - `:disarm_action` - Action to take when robot is disarmed (default: `:disable_torque`)
@@ -65,12 +65,12 @@ defmodule BB.Servo.Robotis.Controller do
       baud_rate: [
         type: :pos_integer,
         doc: "Baud rate in bps",
-        default: 57_600
+        default: 1_000_000
       ],
       control_table: [
-        type: {:in, [:xl330_m288, :xm430, :xl320]},
+        type: {:behaviour, Robotis.ControlTable},
         doc: "The servo control table to use",
-        default: :xm430
+        default: Robotis.ControlTable.XM430
       ],
       poll_interval_ms: [
         type: :pos_integer,
@@ -131,7 +131,7 @@ defmodule BB.Servo.Robotis.Controller do
   @impl BB.Controller
   def init(opts) do
     bb = Keyword.fetch!(opts, :bb)
-    control_table = Keyword.get(opts, :control_table, :xm430)
+    control_table = Keyword.get(opts, :control_table, Robotis.ControlTable.XM430)
     poll_interval_ms = Keyword.get(opts, :poll_interval_ms, 50)
     status_poll_interval_ms = Keyword.get(opts, :status_poll_interval_ms, 1000)
     disarm_action = Keyword.get(opts, :disarm_action, :disable_torque)
@@ -174,8 +174,8 @@ defmodule BB.Servo.Robotis.Controller do
   defp start_robotis(opts) do
     Robotis.start_link(
       uart_port: Keyword.fetch!(opts, :port),
-      baud: Keyword.get(opts, :baud_rate, 57_600),
-      control_table: Keyword.get(opts, :control_table, :xm430)
+      baud: Keyword.get(opts, :baud_rate, 1_000_000),
+      control_table: Keyword.get(opts, :control_table, Robotis.ControlTable.XM430)
     )
   end
 

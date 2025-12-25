@@ -110,7 +110,7 @@ defmodule MyRobot do
   controller :dynamixel, {BB.Servo.Robotis.Controller,
     port: "/dev/ttyUSB0",
     baud_rate: 1_000_000,
-    control_table: :xm430
+    control_table: Robotis.ControlTable.XM430
   }
 
   parameters do
@@ -181,7 +181,7 @@ Controller reports hardware errors to BB.Safety
 
 ### Supported Control Tables
 
-- `:xm430` - XM430 series (W210, W350)
-- `:xl330_m288` - XL330-M288
-- `:xl320` - XL320 (has different parameters)
+- `Robotis.ControlTable.XM430` - XM430 series (W210, W350)
+- `Robotis.ControlTable.XL330` - XL330-M288
+- `Robotis.ControlTable.XL320` - XL320 (has different parameters)
 

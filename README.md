@@ -66,7 +66,7 @@ defmodule MyRobot do
   controller :dynamixel, {BB.Servo.Robotis.Controller,
     port: "/dev/ttyUSB0",
     baud_rate: 1_000_000,
-    control_table: :xm430
+    control_table: Robotis.ControlTable.XM430
   }
 
   topology do
@@ -157,7 +157,7 @@ bus. Define one controller per U2D2 adapter. The controller handles:
 |--------|------|---------|-------------|
 | `port` | string | required | Serial port path (e.g., "/dev/ttyUSB0") |
 | `baud_rate` | integer | 57600 | Baud rate in bps |
-| `control_table` | atom | `:xm430` | Servo control table (`:xm430`, `:xl330_m288`, `:xl320`) |
+| `control_table` | module | `Robotis.ControlTable.XM430` | Servo control table (anything that implements the `Robotis.ControlTable` behaviour) |
 | `poll_interval_ms` | integer | 50 | Position feedback polling interval (20Hz default) |
 | `status_poll_interval_ms` | integer | 1000 | Status polling interval (0 to disable) |
 | `disarm_action` | atom | `:disable_torque` | Action on disarm (`:disable_torque` or `:hold`) |

@@ -32,7 +32,7 @@ defmodule BB.Servo.Robotis do
         controller :dynamixel, {BB.Servo.Robotis.Controller,
           port: "/dev/ttyUSB0",
           baud_rate: 1_000_000,
-          control_table: :xm430
+          control_table: Robotis.ControlTable.XM430
         }
 
         topology do

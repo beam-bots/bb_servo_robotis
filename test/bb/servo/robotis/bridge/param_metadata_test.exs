@@ -9,7 +9,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
 
   describe "list_params/1" do
     test "returns sorted list of params for xm430" do
-      params = ParamMetadata.list_params(:xm430)
+      params = ParamMetadata.list_params(Robotis.ControlTable.XM430)
 
       assert is_list(params)
       refute Enum.empty?(params)
@@ -17,7 +17,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "includes info, config, and control params" do
-      params = ParamMetadata.list_params(:xm430)
+      params = ParamMetadata.list_params(Robotis.ControlTable.XM430)
 
       assert :model_number in params
       assert :firmware_version in params
@@ -26,7 +26,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "excludes status params" do
-      params = ParamMetadata.list_params(:xm430)
+      params = ParamMetadata.list_params(Robotis.ControlTable.XM430)
 
       refute :present_position in params
       refute :present_temperature in params
@@ -35,7 +35,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "excludes indirect addressing params" do
-      params = ParamMetadata.list_params(:xm430)
+      params = ParamMetadata.list_params(Robotis.ControlTable.XM430)
 
       refute :indirect_address_1 in params
       refute :indirect_data_1 in params
@@ -52,7 +52,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
 
   describe "param_info/2" do
     test "returns info category for model_number" do
-      assert {:ok, info} = ParamMetadata.param_info(:xm430, :model_number)
+      assert {:ok, info} = ParamMetadata.param_info(Robotis.ControlTable.XM430, :model_number)
 
       assert info.category == :info
       assert info.writable == false
@@ -60,7 +60,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "returns config category for velocity_limit" do
-      assert {:ok, info} = ParamMetadata.param_info(:xm430, :velocity_limit)
+      assert {:ok, info} = ParamMetadata.param_info(Robotis.ControlTable.XM430, :velocity_limit)
 
       assert info.category == :config
       assert info.writable == true
@@ -68,7 +68,7 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "returns control category for position_p_gain" do
-      assert {:ok, info} = ParamMetadata.param_info(:xm430, :position_p_gain)
+      assert {:ok, info} = ParamMetadata.param_info(Robotis.ControlTable.XM430, :position_p_gain)
 
       assert info.category == :control
       assert info.writable == true
@@ -76,48 +76,50 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
     end
 
     test "returns error for unknown param" do
-      assert {:error, :unknown_param} = ParamMetadata.param_info(:xm430, :not_a_real_param)
+      assert {:error, :unknown_param} =
+               ParamMetadata.param_info(Robotis.ControlTable.XM430, :not_a_real_param)
     end
 
     test "returns error for status param" do
-      assert {:error, :unknown_param} = ParamMetadata.param_info(:xm430, :present_temperature)
+      assert {:error, :unknown_param} =
+               ParamMetadata.param_info(Robotis.ControlTable.XM430, :present_temperature)
     end
   end
 
   describe "writable?/2" do
     test "returns false for info params" do
-      refute ParamMetadata.writable?(:xm430, :model_number)
-      refute ParamMetadata.writable?(:xm430, :firmware_version)
+      refute ParamMetadata.writable?(Robotis.ControlTable.XM430, :model_number)
+      refute ParamMetadata.writable?(Robotis.ControlTable.XM430, :firmware_version)
     end
 
     test "returns true for config params" do
-      assert ParamMetadata.writable?(:xm430, :velocity_limit)
-      assert ParamMetadata.writable?(:xm430, :operating_mode)
+      assert ParamMetadata.writable?(Robotis.ControlTable.XM430, :velocity_limit)
+      assert ParamMetadata.writable?(Robotis.ControlTable.XM430, :operating_mode)
     end
 
     test "returns true for control params" do
-      assert ParamMetadata.writable?(:xm430, :position_p_gain)
-      assert ParamMetadata.writable?(:xm430, :goal_position)
+      assert ParamMetadata.writable?(Robotis.ControlTable.XM430, :position_p_gain)
+      assert ParamMetadata.writable?(Robotis.ControlTable.XM430, :goal_position)
     end
 
     test "returns false for unknown params" do
-      refute ParamMetadata.writable?(:xm430, :not_a_real_param)
+      refute ParamMetadata.writable?(Robotis.ControlTable.XM430, :not_a_real_param)
     end
   end
 
   describe "requires_torque_off?/2" do
     test "returns false for control params" do
-      refute ParamMetadata.requires_torque_off?(:xm430, :position_p_gain)
-      refute ParamMetadata.requires_torque_off?(:xm430, :goal_position)
+      refute ParamMetadata.requires_torque_off?(Robotis.ControlTable.XM430, :position_p_gain)
+      refute ParamMetadata.requires_torque_off?(Robotis.ControlTable.XM430, :goal_position)
     end
 
     test "returns true for config params" do
-      assert ParamMetadata.requires_torque_off?(:xm430, :velocity_limit)
-      assert ParamMetadata.requires_torque_off?(:xm430, :operating_mode)
+      assert ParamMetadata.requires_torque_off?(Robotis.ControlTable.XM430, :velocity_limit)
+      assert ParamMetadata.requires_torque_off?(Robotis.ControlTable.XM430, :operating_mode)
     end
 
     test "returns false for info params" do
-      refute ParamMetadata.requires_torque_off?(:xm430, :model_number)
+      refute ParamMetadata.requires_torque_off?(Robotis.ControlTable.XM430, :model_number)
     end
   end
 

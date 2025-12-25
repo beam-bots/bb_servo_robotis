@@ -17,7 +17,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
 
   defp stub_controller_queries do
     stub(BB.Process, :call, fn
-      TestRobot, @controller_name, :get_control_table -> {:ok, :xm430}
+      TestRobot, @controller_name, :get_control_table -> {:ok, Robotis.ControlTable.XM430}
       TestRobot, @controller_name, :list_servos -> {:ok, [1, 2]}
       TestRobot, @controller_name, {:read, 1, :position_p_gain} -> {:ok, 800}
       TestRobot, @controller_name, {:read, 1, :torque_enable} -> {:ok, false}
@@ -37,7 +37,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
       assert {:ok, state} = Bridge.init(opts)
       assert state.robot == TestRobot
       assert state.controller == @controller_name
-      assert state.control_table == :xm430
+      assert state.control_table == Robotis.ControlTable.XM430
     end
   end
 
@@ -147,7 +147,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
 
     test "returns error when writing config param with torque enabled" do
       stub(BB.Process, :call, fn
-        TestRobot, @controller_name, :get_control_table -> {:ok, :xm430}
+        TestRobot, @controller_name, :get_control_table -> {:ok, Robotis.ControlTable.XM430}
         TestRobot, @controller_name, :list_servos -> {:ok, [1]}
         TestRobot, @controller_name, {:read, 1, :torque_enable} -> {:ok, true}
       end)

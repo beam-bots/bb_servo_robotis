@@ -28,12 +28,12 @@ defmodule BB.Servo.Robotis.ControllerTest do
         bb: default_bb_context(),
         port: "/dev/ttyUSB0",
         baud_rate: 1_000_000,
-        control_table: :xm430
+        control_table: Robotis.ControlTable.XM430
       ]
 
       assert {:ok, state} = Controller.init(opts)
 
-      assert state.control_table == :xm430
+      assert state.control_table == Robotis.ControlTable.XM430
       assert state.name == @controller_name
     end
 
@@ -44,7 +44,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       assert {:ok, state} = Controller.init(opts)
 
-      assert state.control_table == :xm430
+      assert state.control_table == Robotis.ControlTable.XM430
     end
 
     test "starts Robotis GenServer with correct options" do
@@ -157,7 +157,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
     end
 
     test "get_control_table returns the control table", %{state: state} do
-      assert {:reply, {:ok, :xm430}, _state} =
+      assert {:reply, {:ok, Robotis.ControlTable.XM430}, _state} =
                Controller.handle_call(:get_control_table, self(), state)
     end
 
