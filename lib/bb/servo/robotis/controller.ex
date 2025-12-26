@@ -91,12 +91,20 @@ defmodule BB.Servo.Robotis.Controller do
 
   require Logger
 
+  alias BB.Diagnostic
+  alias BB.Error.Protocol.Robotis.HardwareAlert
   alias BB.Message
   alias BB.Message.Sensor.JointState
   alias BB.Servo.Robotis.Message.ServoStatus
   alias BB.StateMachine.Transition
 
   @position_resolution 4096
+
+  # Diagnostic thresholds
+  @temp_warning_threshold 55.0
+  @temp_error_threshold 70.0
+  @voltage_low_threshold 10.0
+  @voltage_high_threshold 14.0
 
   @doc """
   Handle disarm based on the configured `disarm_action`.
@@ -333,12 +341,29 @@ defmodule BB.Servo.Robotis.Controller do
 
       {servo_id, {:error, reason}}, registry ->
         Logger.warning("Failed to read position for servo #{servo_id}: #{inspect(reason)}")
+        emit_comm_error_diagnostic(state, servo_id, reason)
         registry
 
       other, registry ->
         Logger.warning("Unexpected fast_sync_read result: #{inspect(other)}")
         registry
     end)
+  end
+
+  defp emit_comm_error_diagnostic(state, servo_id, reason) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.error(component, "Communication error reading position",
+      values: %{servo_id: servo_id, reason: inspect(reason)}
+    )
+  end
+
+  defp get_joint_name(state, servo_id) do
+    case Map.get(state.servo_registry, servo_id) do
+      %{joint_name: name} -> name
+      nil -> String.to_atom("servo_#{servo_id}")
+    end
   end
 
   defp maybe_publish_position(_state, registry, servo_id, _position_degrees)
@@ -437,6 +462,7 @@ defmodule BB.Servo.Robotis.Controller do
         if status_changed?(status, last) do
           publish_servo_status(state, servo_id, status)
           maybe_report_hardware_error(state, servo_id, status, last)
+          emit_status_diagnostics(state, servo_id, status, last)
           Map.put(acc, servo_id, status)
         else
           acc
@@ -504,6 +530,131 @@ defmodule BB.Servo.Robotis.Controller do
     end
   end
 
+  # Emit diagnostics for temperature and voltage thresholds
+  defp emit_status_diagnostics(state, servo_id, status, last) do
+    emit_temperature_diagnostic(state, servo_id, status.temperature, last)
+    emit_voltage_diagnostic(state, servo_id, status.voltage, last)
+  end
+
+  defp emit_temperature_diagnostic(_state, _servo_id, nil, _last), do: :ok
+
+  defp emit_temperature_diagnostic(state, servo_id, temp, last) do
+    last_temp = if last, do: last.temperature, else: nil
+    temp_level = temp_diagnostic_level(temp, last_temp)
+    emit_temp_diagnostic_for_level(temp_level, state, servo_id, temp)
+  end
+
+  defp temp_diagnostic_level(temp, last_temp) do
+    crossed_error? = crossed_threshold?(temp, last_temp, @temp_error_threshold, :up)
+    crossed_warning? = crossed_threshold?(temp, last_temp, @temp_warning_threshold, :up)
+    recovered? = crossed_threshold?(temp, last_temp, @temp_warning_threshold, :down)
+
+    cond do
+      crossed_error? -> :error
+      crossed_warning? -> :warn
+      recovered? -> :ok
+      true -> nil
+    end
+  end
+
+  defp emit_temp_diagnostic_for_level(nil, _state, _servo_id, _temp), do: :ok
+
+  defp emit_temp_diagnostic_for_level(:error, state, servo_id, temp) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.error(component, "Temperature critical",
+      values: %{temperature: temp, threshold: @temp_error_threshold, servo_id: servo_id}
+    )
+  end
+
+  defp emit_temp_diagnostic_for_level(:warn, state, servo_id, temp) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.warn(component, "Temperature elevated",
+      values: %{temperature: temp, threshold: @temp_warning_threshold, servo_id: servo_id}
+    )
+  end
+
+  defp emit_temp_diagnostic_for_level(:ok, state, servo_id, temp) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.ok(component, "Temperature normal",
+      values: %{temperature: temp, servo_id: servo_id}
+    )
+  end
+
+  defp emit_voltage_diagnostic(_state, _servo_id, nil, _last), do: :ok
+
+  defp emit_voltage_diagnostic(state, servo_id, voltage, last) do
+    last_voltage = if last, do: last.voltage, else: nil
+    voltage_level = voltage_diagnostic_level(voltage, last_voltage)
+    emit_voltage_diagnostic_for_level(voltage_level, state, servo_id, voltage)
+  end
+
+  defp voltage_diagnostic_level(voltage, last_voltage) do
+    crossed_low? = crossed_threshold?(voltage, last_voltage, @voltage_low_threshold, :down)
+    crossed_high? = crossed_threshold?(voltage, last_voltage, @voltage_high_threshold, :up)
+    recovered? = voltage_recovered?(voltage, last_voltage)
+
+    cond do
+      crossed_low? -> :warn_low
+      crossed_high? -> :warn_high
+      recovered? -> :ok
+      true -> nil
+    end
+  end
+
+  defp voltage_recovered?(_voltage, nil), do: false
+
+  defp voltage_recovered?(voltage, last_voltage) do
+    voltage_ok? = voltage >= @voltage_low_threshold and voltage <= @voltage_high_threshold
+
+    last_voltage_ok? =
+      last_voltage >= @voltage_low_threshold and last_voltage <= @voltage_high_threshold
+
+    voltage_ok? and not last_voltage_ok?
+  end
+
+  defp emit_voltage_diagnostic_for_level(nil, _state, _servo_id, _voltage), do: :ok
+
+  defp emit_voltage_diagnostic_for_level(:warn_low, state, servo_id, voltage) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.warn(component, "Voltage low",
+      values: %{voltage: voltage, threshold: @voltage_low_threshold, servo_id: servo_id}
+    )
+  end
+
+  defp emit_voltage_diagnostic_for_level(:warn_high, state, servo_id, voltage) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.warn(component, "Voltage high",
+      values: %{voltage: voltage, threshold: @voltage_high_threshold, servo_id: servo_id}
+    )
+  end
+
+  defp emit_voltage_diagnostic_for_level(:ok, state, servo_id, voltage) do
+    joint_name = get_joint_name(state, servo_id)
+    component = [state.bb.robot | state.bb.path] ++ [joint_name]
+
+    Diagnostic.ok(component, "Voltage normal", values: %{voltage: voltage, servo_id: servo_id})
+  end
+
+  # Helper to check if a value crossed a threshold (newly exceeded or returned from)
+  defp crossed_threshold?(value, nil, threshold, :up), do: value >= threshold
+  defp crossed_threshold?(value, nil, threshold, :down), do: value < threshold
+
+  defp crossed_threshold?(value, last, threshold, :up),
+    do: value >= threshold and last < threshold
+
+  defp crossed_threshold?(value, last, threshold, :down),
+    do: value < threshold and last >= threshold
+
   # Report hardware error to safety system when a new error is detected
   defp maybe_report_hardware_error(_state, _servo_id, %{hardware_error: nil}, _last), do: :ok
   defp maybe_report_hardware_error(_state, _servo_id, %{hardware_error: 0}, _last), do: :ok
@@ -522,14 +673,19 @@ defmodule BB.Servo.Robotis.Controller do
   defp maybe_report_hardware_error(_state, _servo_id, _status, _last), do: :ok
 
   defp report_hardware_error(state, servo_id, error) do
-    joint_name =
-      case Map.get(state.servo_registry, servo_id) do
-        %{joint_name: name} -> name
-        nil -> String.to_atom("servo_#{servo_id}")
-      end
-
+    joint_name = get_joint_name(state, servo_id)
     path = state.bb.path ++ [joint_name]
-    BB.Safety.report_error(state.bb.robot, path, {:hardware_error, error})
+    alert = HardwareAlert.from_bits(servo_id, error)
+
+    # Report to safety system
+    BB.Safety.report_error(state.bb.robot, path, alert)
+
+    # Emit diagnostic
+    component = [state.bb.robot | path]
+
+    Diagnostic.error(component, "Hardware error detected",
+      values: %{servo_id: servo_id, error_bits: error, alerts: alert.alerts}
+    )
   end
 
   @impl BB.Controller

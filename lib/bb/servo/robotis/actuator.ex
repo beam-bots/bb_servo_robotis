@@ -62,6 +62,7 @@ defmodule BB.Servo.Robotis.Actuator do
       ]
     ]
 
+  alias BB.Error.Invalid.JointConfig, as: JointConfigError
   alias BB.Message
   alias BB.Message.Actuator.BeginMotion
   alias BB.Message.Actuator.Command
@@ -142,25 +143,54 @@ defmodule BB.Servo.Robotis.Actuator do
 
   defp fetch_joint(robot, joint_name) do
     case BB.Robot.get_joint(robot, joint_name) do
-      nil -> {:error, {:joint_not_found, joint_name}}
-      joint -> {:ok, joint}
+      nil ->
+        {:error,
+         %JointConfigError{joint: joint_name, field: nil, message: "Joint not found in robot"}}
+
+      joint ->
+        {:ok, joint}
     end
   end
 
   defp validate_joint_limits(%{type: :continuous}, joint_name) do
-    {:error, {:unsupported_joint_type, :continuous, joint_name}}
+    {:error,
+     %JointConfigError{
+       joint: joint_name,
+       field: :type,
+       value: :continuous,
+       expected: [:revolute, :prismatic],
+       message: "Continuous joints require position limits for servo control"
+     }}
   end
 
   defp validate_joint_limits(%{limits: nil}, joint_name) do
-    {:error, {:no_limits_defined, joint_name}}
+    {:error,
+     %JointConfigError{
+       joint: joint_name,
+       field: :limits,
+       value: nil,
+       message: "Joint must have limits defined for servo control"
+     }}
   end
 
   defp validate_joint_limits(%{limits: %{lower: nil}}, joint_name) do
-    {:error, {:missing_limit, :lower, joint_name}}
+    {:error,
+     %JointConfigError{
+       joint: joint_name,
+       field: :lower,
+       value: nil,
+       message: "Joint must have lower limit defined"
+     }}
   end
 
   defp validate_joint_limits(%{limits: %{upper: nil}}, joint_name) do
-    {:error, {:missing_limit, :upper, joint_name}}
+    {:error,
+     %JointConfigError{
+       joint: joint_name,
+       field: :upper,
+       value: nil,
+       message: "Joint must have upper limit defined"
+     }}
   end
 
   defp validate_joint_limits(%{limits: limits}, _joint_name) do

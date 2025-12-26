@@ -67,7 +67,7 @@ defmodule BB.Servo.Robotis.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bb, "~> 0.8"},
+      {:bb, "~> 0.9"},
       {:robotis, github: "beam-bots/robotis", branch: "main"},
 
       # dev/test

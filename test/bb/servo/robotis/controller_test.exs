@@ -267,6 +267,8 @@ defmodule BB.Servo.Robotis.ControllerTest do
           }
       }
 
+      alias BB.Error.Protocol.Robotis.HardwareAlert
+
       # Simulate status poll with hardware error
       status = %{temperature: 45.0, voltage: 12.0, current: 0.5, hardware_error: 0x04}
 
@@ -280,7 +282,8 @@ defmodule BB.Servo.Robotis.ControllerTest do
           if is_nil(last) or status.hardware_error != Map.get(last, :hardware_error) do
             # Call report_error directly to test it was invoked
             path = state.bb.path ++ [:servo, servo_id]
-            BB.Safety.report_error(state.bb.robot, path, {:hardware_error, status.hardware_error})
+            alert = HardwareAlert.from_bits(servo_id, status.hardware_error)
+            BB.Safety.report_error(state.bb.robot, path, alert)
             Map.put(acc, servo_id, status)
           else
             acc
@@ -290,7 +293,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert new_last_status[1] == status
 
       assert_receive {:error_reported, TestRobot, [:test_dynamixel, :servo, 1],
-                      {:hardware_error, 0x04}}
+                      %HardwareAlert{servo_id: 1, alerts: [:overheating], raw_value: 0x04}}
     end
   end
 end
