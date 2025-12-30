@@ -49,6 +49,10 @@ defmodule BB.Servo.Robotis.Bridge do
       ]
     ]
 
+  alias BB.Error.Invalid.Bridge.InvalidParamId
+  alias BB.Error.Invalid.Bridge.ReadOnly
+  alias BB.Error.Invalid.Bridge.TorqueMustBeDisabled
+  alias BB.Error.Invalid.Bridge.UnknownParam
   alias BB.Servo.Robotis.Bridge.ParamMetadata
 
   @impl GenServer
@@ -156,24 +160,27 @@ defmodule BB.Servo.Robotis.Bridge do
             {:ok, servo_id, String.to_existing_atom(param_str)}
 
           _ ->
-            {:error, {:invalid_param_id, param_id}}
+            {:error, %InvalidParamId{param_id: param_id}}
         end
 
       _ ->
-        {:error, {:invalid_param_id, param_id}}
+        {:error, %InvalidParamId{param_id: param_id}}
     end
   rescue
-    ArgumentError -> {:error, {:invalid_param_id, param_id}}
+    ArgumentError -> {:error, %InvalidParamId{param_id: param_id}}
   end
 
-  defp parse_param_id(param_id), do: {:error, {:invalid_param_id, param_id}}
+  defp parse_param_id(param_id), do: {:error, %InvalidParamId{param_id: param_id}}
 
   # Validation
 
   defp validate_known_param(control_table, param_name) do
     case ParamMetadata.param_info(control_table, param_name) do
-      {:ok, _} -> :ok
-      {:error, :unknown_param} -> {:error, {:unknown_param, param_name}}
+      {:ok, _} ->
+        :ok
+
+      {:error, :unknown_param} ->
+        {:error, %UnknownParam{param_name: param_name, control_table: control_table}}
     end
   end
 
@@ -181,7 +188,7 @@ defmodule BB.Servo.Robotis.Bridge do
     if ParamMetadata.writable?(control_table, param_name) do
       :ok
     else
-      {:error, {:read_only, param_name}}
+      {:error, %ReadOnly{param_name: param_name}}
     end
   end
 
@@ -189,7 +196,7 @@ defmodule BB.Servo.Robotis.Bridge do
     if ParamMetadata.requires_torque_off?(state.control_table, param_name) do
       case read_param(state, servo_id, :torque_enable) do
         {:ok, false} -> :ok
-        {:ok, true} -> {:error, {:torque_must_be_disabled, param_name}}
+        {:ok, true} -> {:error, %TorqueMustBeDisabled{param_name: param_name, servo_id: servo_id}}
         {:error, _} -> :ok
       end
     else
