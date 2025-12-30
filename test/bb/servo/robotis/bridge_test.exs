@@ -6,6 +6,10 @@ defmodule BB.Servo.Robotis.BridgeTest do
   use ExUnit.Case, async: true
   use Mimic
 
+  alias BB.Error.Invalid.Bridge.InvalidParamId
+  alias BB.Error.Invalid.Bridge.ReadOnly
+  alias BB.Error.Invalid.Bridge.TorqueMustBeDisabled
+  alias BB.Error.Invalid.Bridge.UnknownParam
   alias BB.Servo.Robotis.Bridge
 
   @bridge_name :robotis
@@ -107,10 +111,10 @@ defmodule BB.Servo.Robotis.BridgeTest do
       opts = [bb: default_bb_context(), controller: @controller_name]
       {:ok, state} = Bridge.init(opts)
 
-      assert {:error, {:invalid_param_id, "invalid"}, _state} =
+      assert {:error, %InvalidParamId{param_id: "invalid"}, _state} =
                Bridge.get_remote("invalid", state)
 
-      assert {:error, {:invalid_param_id, "abc:param"}, _state} =
+      assert {:error, %InvalidParamId{param_id: "abc:param"}, _state} =
                Bridge.get_remote("abc:param", state)
     end
 
@@ -120,7 +124,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
       opts = [bb: default_bb_context(), controller: @controller_name]
       {:ok, state} = Bridge.init(opts)
 
-      assert {:error, {:unknown_param, :not_a_param}, _state} =
+      assert {:error, %UnknownParam{param_name: :not_a_param}, _state} =
                Bridge.get_remote("1:not_a_param", state)
     end
   end
@@ -141,7 +145,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
       opts = [bb: default_bb_context(), controller: @controller_name]
       {:ok, state} = Bridge.init(opts)
 
-      assert {:error, {:read_only, :model_number}, _state} =
+      assert {:error, %ReadOnly{param_name: :model_number}, _state} =
                Bridge.set_remote("1:model_number", 123, state)
     end
 
@@ -155,7 +159,7 @@ defmodule BB.Servo.Robotis.BridgeTest do
       opts = [bb: default_bb_context(), controller: @controller_name]
       {:ok, state} = Bridge.init(opts)
 
-      assert {:error, {:torque_must_be_disabled, :velocity_limit}, _state} =
+      assert {:error, %TorqueMustBeDisabled{param_name: :velocity_limit, servo_id: 1}, _state} =
                Bridge.set_remote("1:velocity_limit", 100, state)
     end
   end
