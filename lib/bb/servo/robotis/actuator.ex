@@ -12,17 +12,18 @@ defmodule BB.Servo.Robotis.Actuator do
   - Position range maps to the servo's goal_position register
 
   When initialised, the actuator:
-  1. Sets the goal position to joint center (servo won't move until armed)
-  2. Registers the servo with the controller for position feedback and torque management
+  1. Disables torque on the servo
+  2. Registers with the controller, receiving the shared ETS table reference
+  3. Subscribes to position commands
 
   When a position command is received, the actuator:
   1. Clamps the position to joint limits
   2. Converts to servo position units (0-4095 for 360 degrees)
-  3. Sends goal_position command to the Robotis controller
+  3. Writes goal_position to the controller's ETS table
   4. Publishes a `BB.Message.Actuator.BeginMotion` message
 
-  Position feedback and torque management are handled by the controller. Servos
-  remain unpowered until the robot is armed, then move to their goal positions.
+  The controller picks up pending commands on its next loop tick and writes them
+  to the serial bus.
 
   ## Example DSL Usage
 
@@ -71,6 +72,9 @@ defmodule BB.Servo.Robotis.Actuator do
   @position_resolution 4096
   @position_center 2048
 
+  # ETS tuple field index for command writes
+  @ets_idx_goal_position 12
+
   @doc """
   Safety disarm callback.
 
@@ -86,20 +90,10 @@ defmodule BB.Servo.Robotis.Actuator do
   def init(opts) do
     with {:ok, state} <- build_state(opts),
          :ok <- disable_torque(state),
-         :ok <- set_initial_position(state) do
-      # Register servo with controller for position feedback polling and torque management
-      :ok =
-        BBProcess.call(
-          state.bb.robot,
-          state.controller,
-          {:register_servo, state.servo_id, state.joint_name, state.center_angle,
-           state.position_deadband, state.reverse?}
-        )
-
-      # Subscribe to position commands published to [:actuator, joint_name, actuator_name]
+         {:ok, servo_table} <- register_servo(state) do
       BB.subscribe(state.bb.robot, [:actuator, state.joint_name, state.name])
 
-      {:ok, state}
+      {:ok, Map.put(state, :servo_table, servo_table)}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -209,19 +203,16 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
-  defp set_initial_position(state) do
-    position = angle_to_position(state.center_angle, state)
-
-    case BBProcess.call(
-           state.bb.robot,
-           state.controller,
-           {:write_raw, state.servo_id, :goal_position, position}
-         ) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, _} = error -> error
-    end
+  defp register_servo(state) do
+    BBProcess.call(
+      state.bb.robot,
+      state.controller,
+      {:register_servo, state.servo_id, state.joint_name, state.center_angle,
+       state.position_deadband, state.reverse?}
+    )
   end
+
+  # --- Command handling ---
 
   @impl BB.Actuator
   def handle_info({:bb, _path, %Message{payload: %Command.Position{} = cmd}}, state) do
@@ -251,19 +242,16 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
+  # --- Position commands ---
+
   defp do_set_position(angle, command_id, state) when is_integer(angle),
     do: do_set_position(angle * 1.0, command_id, state)
 
   defp do_set_position(angle, command_id, state) do
     clamped_angle = clamp_angle(angle, state)
-    new_position = angle_to_position(clamped_angle, state)
+    goal_position = angle_to_position(clamped_angle, state)
 
-    :ok =
-      BBProcess.cast(
-        state.bb.robot,
-        state.controller,
-        {:write_raw, state.servo_id, :goal_position, new_position}
-      )
+    write_servo_command(state, goal_position)
 
     travel_distance = abs(state.current_angle - clamped_angle)
     travel_time_ms = round(travel_distance / state.velocity_limit * 1000)
@@ -285,6 +273,16 @@ defmodule BB.Servo.Robotis.Actuator do
     {:noreply, %{state | current_angle: clamped_angle}}
   end
 
+  defp write_servo_command(state, goal_position) do
+    :ets.update_element(state.servo_table, state.servo_id, [
+      {@ets_idx_goal_position, goal_position}
+    ])
+  rescue
+    ArgumentError -> false
+  end
+
+  # --- Helpers ---
+
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
@@ -295,8 +293,6 @@ defmodule BB.Servo.Robotis.Actuator do
   end
 
   defp angle_to_position(angle_rad, state) do
-    # Convert angle offset from joint center to servo position units
-    # Servo center (2048) corresponds to joint center angle
     offset_rad = angle_rad - state.center_angle
     offset_units = offset_rad / (2 * :math.pi()) * @position_resolution
 
@@ -307,7 +303,6 @@ defmodule BB.Servo.Robotis.Actuator do
         @position_center + offset_units
       end
 
-    # Clamp to valid servo range (0-4095)
     round(position)
     |> max(0)
     |> min(@position_resolution - 1)

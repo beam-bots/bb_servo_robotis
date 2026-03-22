@@ -40,9 +40,9 @@ Controller (GenServer)
 Robotis (Serial communication)
     ^
     | used by
-Actuator (GenServer) --publishes--> BeginMotion
+Actuator (GenServer) --writes goal_position--> ETS table <--reads/clears-- Controller
     |
-    v registers with
+    v registers with (receives ETS table ref)
 Controller --publishes--> JointState (position feedback)
           --publishes--> ServoStatus (status monitoring)
 
@@ -52,13 +52,15 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
 ### Key Modules
 
 - **Controller** (`lib/bb/servo/robotis/controller.ex`) - GenServer wrapping the `Robotis` library.
-  Handles serial communication, position feedback polling (via `fast_sync_read`), status monitoring,
-  and torque management. Multiple actuators share one controller. Implements `BB.Controller` and
-  `BB.Safety` behaviours.
+  Owns a shared ETS table and runs a fixed-rate control loop (default 100Hz) that reads pending
+  commands from ETS, writes them to the bus, reads positions via `fast_sync_read`, and publishes
+  `JointState` messages. Status polling runs on a counter within the same loop. Implements
+  `BB.Controller` and `BB.Safety` behaviours.
 
 - **Actuator** (`lib/bb/servo/robotis/actuator.ex`) - GenServer that receives position commands
-  (radians), converts to servo position (0-4095), sends to controller, and publishes
-  `BB.Message.Actuator.BeginMotion` messages. Handles commands via three delivery methods:
+  (radians), converts to servo position (0-4095), writes `goal_position` to the controller's
+  ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Handles commands via
+  three delivery methods:
   - `handle_info/2` for pubsub delivery (`BB.Actuator.set_position/4`)
   - `handle_cast/2` for direct delivery (`BB.Actuator.set_position!/4`)
   - `handle_call/3` for synchronous delivery (`BB.Actuator.set_position_sync/5`)
@@ -82,7 +84,8 @@ The library uses BB's:
 - `BB.Message` for typed message payloads
 - `BB.Safety` for arm/disarm handling
 - `BB.publish`/`BB.subscribe` for hierarchical PubSub by path
-- `BB.Process.call`/`BB.Process.cast` to communicate with sibling processes via the robot registry
+- `BB.Process.call` to communicate with sibling processes via the robot registry
+- ETS for low-latency command passing from actuators to controller
 - `Spark.Options` for configuration validation
 - Joint limits from robot topology to derive servo parameters
 
@@ -151,32 +154,24 @@ BB.Actuator.set_position()
 Actuator receives Command.Position
     |
     v
-Actuator casts to Controller with goal_position
-    |
-    v
-Controller writes to servo via Robotis library
+Actuator writes goal_position to ETS table
     |
     v
 Actuator publishes BeginMotion
 
-Controller poll loop (separate):
+Controller tick loop (unified, default 100Hz):
     |
     v
-Controller reads present_position via fast_sync_read
+1. Read pending commands from ETS → write_raw to servos → clear ETS commands
     |
     v
-Controller publishes JointState per joint
-
-Controller status poll loop (separate):
+2. Read present_position via fast_sync_read → update ETS → publish JointState
     |
     v
-Controller reads temperature/voltage/current/errors
+3. Every N ticks: read temperature/voltage/current/errors → publish ServoStatus
     |
     v
-Controller publishes ServoStatus
-    |
-    v
-Controller reports hardware errors to BB.Safety
+4. Report hardware errors to BB.Safety
 ```
 
 ### Supported Control Tables

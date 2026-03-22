@@ -6,21 +6,19 @@ defmodule BB.Servo.Robotis.Controller do
   @moduledoc """
   A controller that manages a Robotis/Dynamixel servo bus.
 
-  This controller wraps the `Robotis` GenServer and provides an interface
-  for actuators to communicate with servos via the serial bus. Multiple
-  actuators can share a single controller, with each actuator controlling
-  a different servo ID (1-253).
+  This controller wraps the `Robotis` GenServer and provides a shared ETS table
+  for actuators to write commands to. The controller runs a fixed-rate control
+  loop that batches all pending commands into writes and reads positions via
+  bulk reads (`fast_sync_read`).
 
-  ## Position Feedback
+  On each loop tick, the controller:
 
-  The controller handles position feedback for all registered servos using
-  efficient bulk reads (`fast_sync_read`). When actuators register with the
-  controller, they provide their joint mapping information. The controller
-  then polls all registered servos at a configurable interval and publishes
-  `JointState` messages.
-
-  This eliminates the need for separate sensor GenServers and prevents
-  bus contention from multiple concurrent read requests.
+  1. Reads all pending commands from the ETS table
+  2. Writes them to the serial bus
+  3. Clears the command fields
+  4. Reads all servo positions via `fast_sync_read`
+  5. Updates the ETS table with current positions
+  6. Publishes `JointState` messages for positions that exceed deadband
 
   ## Configuration
 
@@ -30,25 +28,31 @@ defmodule BB.Servo.Robotis.Controller do
         port: "/dev/ttyUSB0",
         baud_rate: 1_000_000,
         control_table: Robotis.ControlTable.XM430,
-        poll_interval_ms: 50
+        loop_interval_ms: 10
       }
 
   ## Options
 
   - `:port` - (required) The serial port path, e.g., `"/dev/ttyUSB0"`
-  - `:baud_rate` - Baud rate in bps (default: 57600)
+  - `:baud_rate` - Baud rate in bps (default: 1_000_000)
   - `:control_table` - The servo control table to use (default: `Robotis.ControlTable.XM430`)
-  - `:poll_interval_ms` - Position feedback interval in ms (default: 50, i.e. 20Hz)
+  - `:loop_interval_ms` - Control loop interval in ms (default: 10, i.e. 100Hz)
   - `:status_poll_interval_ms` - Status polling interval in ms (default: 1000, set to 0 to disable)
   - `:disarm_action` - Action to take when robot is disarmed (default: `:disable_torque`)
     - `:disable_torque` - Disable torque on all servos (safe default)
     - `:hold` - Keep torque enabled (servos hold position)
 
-  ## Status Polling
+  ## ETS Table Structure
 
-  When enabled, the controller periodically reads status registers (temperature, voltage,
-  current, hardware errors) from all registered servos and publishes `ServoStatus` messages
-  to the sensor path.
+  Each registered servo has a row in the ETS table:
+
+      {servo_id, joint_name, center_angle, reverse?, position_deadband,
+       last_position_raw, present_position,
+       present_temperature, present_voltage, present_current, hardware_error,
+       goal_position}
+
+  Actuators write `goal_position` (raw units) via `:ets.update_element/3`.
+  The controller reads and clears them each tick.
 
   ## Safety
 
@@ -72,10 +76,10 @@ defmodule BB.Servo.Robotis.Controller do
         doc: "The servo control table to use",
         default: Robotis.ControlTable.XM430
       ],
-      poll_interval_ms: [
+      loop_interval_ms: [
         type: :pos_integer,
-        doc: "Position feedback polling interval in milliseconds",
-        default: 50
+        doc: "Control loop interval in milliseconds (default: 10, i.e. 100Hz)",
+        default: 10
       ],
       status_poll_interval_ms: [
         type: :non_neg_integer,
@@ -99,6 +103,15 @@ defmodule BB.Servo.Robotis.Controller do
   alias BB.StateMachine.Transition
 
   @position_resolution 4096
+
+  # ETS tuple field indices (positions 2-5 are config, matched via pattern)
+  @idx_last_position_raw 6
+  @idx_present_position 7
+  @idx_present_temperature 8
+  @idx_present_voltage 9
+  @idx_present_current 10
+  @idx_hardware_error 11
+  @idx_goal_position 12
 
   # Diagnostic thresholds
   @temp_warning_threshold 55.0
@@ -140,23 +153,33 @@ defmodule BB.Servo.Robotis.Controller do
   def init(opts) do
     bb = Keyword.fetch!(opts, :bb)
     control_table = Keyword.get(opts, :control_table, Robotis.ControlTable.XM430)
-    poll_interval_ms = Keyword.get(opts, :poll_interval_ms, 50)
+    loop_interval_ms = Keyword.get(opts, :loop_interval_ms, 10)
     status_poll_interval_ms = Keyword.get(opts, :status_poll_interval_ms, 1000)
     disarm_action = Keyword.get(opts, :disarm_action, :disable_torque)
 
+    status_every_n_ticks =
+      if status_poll_interval_ms > 0 do
+        max(1, div(status_poll_interval_ms, loop_interval_ms))
+      else
+        0
+      end
+
     case start_robotis(opts) do
       {:ok, robotis} ->
+        servo_table = :ets.new(:servo_state, [:set, :public])
+
         state = %{
           bb: bb,
           robotis: robotis,
           control_table: control_table,
           name: List.last(bb.path),
-          poll_interval_ms: poll_interval_ms,
+          loop_interval_ms: loop_interval_ms,
           status_poll_interval_ms: status_poll_interval_ms,
+          status_every_n_ticks: status_every_n_ticks,
+          status_tick_counter: 0,
           disarm_action: disarm_action,
-          # servo_id -> %{joint_name: atom, center_angle: float, last_position_raw: integer | nil}
-          servo_registry: %{},
-          # servo_id -> %{temperature: float, voltage: float, current: float, hardware_error: integer | nil}
+          servo_table: servo_table,
+          servo_ids: [],
           last_status: %{}
         }
 
@@ -166,11 +189,9 @@ defmodule BB.Servo.Robotis.Controller do
           opts: [robotis: state.robotis, servo_ids: [], disarm_action: state.disarm_action]
         )
 
-        # Subscribe to state machine transitions for arm/disarm
         BB.subscribe(state.bb.robot, [:state_machine])
 
-        # Start polling after a short delay to let actuators register
-        Process.send_after(self(), :start_polling, 100)
+        Process.send_after(self(), :start_loop, 100)
 
         {:ok, state}
 
@@ -187,33 +208,42 @@ defmodule BB.Servo.Robotis.Controller do
     )
   end
 
+  # --- Handle calls ---
+
   @impl BB.Controller
   def handle_call(
         {:register_servo, servo_id, joint_name, center_angle, position_deadband, reverse?},
         _from,
         state
       ) do
-    new_registry =
-      Map.put(state.servo_registry, servo_id, %{
-        joint_name: joint_name,
-        center_angle: center_angle,
-        position_deadband: position_deadband,
-        reverse?: reverse?,
-        last_position_raw: nil
-      })
+    :ets.insert(state.servo_table, {
+      servo_id,
+      joint_name,
+      center_angle,
+      reverse?,
+      position_deadband,
+      _last_position_raw = nil,
+      _present_position = nil,
+      _present_temperature = nil,
+      _present_voltage = nil,
+      _present_current = nil,
+      _hardware_error = nil,
+      _goal_position = nil
+    })
 
-    # Update safety registration with new servo list
+    servo_ids = [servo_id | state.servo_ids] |> Enum.sort() |> Enum.uniq()
+
     BB.Safety.register(__MODULE__,
       robot: state.bb.robot,
       path: state.bb.path,
       opts: [
         robotis: state.robotis,
-        servo_ids: Map.keys(new_registry),
+        servo_ids: servo_ids,
         disarm_action: state.disarm_action
       ]
     )
 
-    {:reply, :ok, %{state | servo_registry: new_registry}}
+    {:reply, {:ok, state.servo_table}, %{state | servo_ids: servo_ids}}
   end
 
   def handle_call({:read, servo_id, param}, _from, state) do
@@ -252,45 +282,32 @@ defmodule BB.Servo.Robotis.Controller do
   end
 
   def handle_call(:list_servos, _from, state) do
-    {:reply, {:ok, Map.keys(state.servo_registry)}, state}
+    {:reply, {:ok, state.servo_ids}, state}
   end
 
   def handle_call(:get_control_table, _from, state) do
     {:reply, {:ok, state.control_table}, state}
   end
 
-  @impl BB.Controller
-  def handle_cast({:write, servo_id, param, value}, state) do
-    Robotis.write(state.robotis, servo_id, param, value, false)
-    {:noreply, state}
-  end
-
-  def handle_cast({:write_raw, servo_id, param, value}, state) do
-    Robotis.write_raw(state.robotis, servo_id, param, value, false)
-    {:noreply, state}
-  end
-
-  def handle_cast({:sync_write, param, values}, state) do
-    Robotis.sync_write(state.robotis, param, values)
-    {:noreply, state}
-  end
+  # --- Handle info ---
 
   @impl BB.Controller
-  def handle_info(:start_polling, state) do
-    schedule_poll(state.poll_interval_ms)
-    schedule_status_poll(state.status_poll_interval_ms)
+  def handle_info(:start_loop, state) do
+    schedule_tick(state.loop_interval_ms)
     {:noreply, state}
   end
 
-  def handle_info(:poll, state) do
-    state = poll_positions(state)
-    schedule_poll(state.poll_interval_ms)
-    {:noreply, state}
-  end
+  def handle_info(:tick, state) do
+    tick_start = System.monotonic_time(:millisecond)
 
-  def handle_info(:poll_status, state) do
-    state = poll_status(state)
-    schedule_status_poll(state.status_poll_interval_ms)
+    state =
+      state
+      |> process_commands()
+      |> read_positions()
+      |> maybe_poll_status()
+
+    elapsed = System.monotonic_time(:millisecond) - tick_start
+    schedule_tick(max(0, state.loop_interval_ms - elapsed))
     {:noreply, state}
   end
 
@@ -303,51 +320,99 @@ defmodule BB.Servo.Robotis.Controller do
     {:noreply, state}
   end
 
-  defp schedule_poll(interval_ms) do
-    Process.send_after(self(), :poll, interval_ms)
+  # --- Control loop ---
+
+  defp schedule_tick(interval_ms) do
+    Process.send_after(self(), :tick, interval_ms)
   end
 
-  defp schedule_status_poll(0), do: :ok
+  defp process_commands(%{servo_ids: []} = state), do: state
 
-  defp schedule_status_poll(interval_ms) do
-    Process.send_after(self(), :poll_status, interval_ms)
-  end
+  defp process_commands(state) do
+    entries = :ets.tab2list(state.servo_table)
 
-  defp enable_all_torque(%{servo_registry: registry}) when map_size(registry) == 0 do
-    :ok
-  end
+    commands =
+      for {id, _, _, _, _, _, _, _, _, _, _, goal_pos} <- entries,
+          goal_pos != nil,
+          do: {id, goal_pos}
 
-  defp enable_all_torque(state) do
-    servo_ids = Map.keys(state.servo_registry)
-    values = Enum.map(servo_ids, fn id -> {id, true} end)
-    Robotis.sync_write(state.robotis, :torque_enable, values)
-  end
+    if commands != [] do
+      Enum.each(commands, fn {id, goal_pos} ->
+        Robotis.write_raw(state.robotis, id, :goal_position, goal_pos, false)
+      end)
 
-  defp poll_positions(%{servo_registry: registry} = state) when map_size(registry) == 0 do
+      for {id, _} <- commands do
+        :ets.update_element(state.servo_table, id, [{@idx_goal_position, nil}])
+      end
+    end
+
     state
   end
 
-  defp poll_positions(state) do
-    servo_ids = Map.keys(state.servo_registry)
-    results = Robotis.fast_sync_read(state.robotis, servo_ids, :present_position)
-    new_registry = publish_changed_positions(results, state)
-    %{state | servo_registry: new_registry}
-  end
+  defp read_positions(%{servo_ids: []} = state), do: state
 
-  defp publish_changed_positions(results, state) do
-    Enum.reduce(results, state.servo_registry, fn
-      {servo_id, {:ok, position_degrees}}, registry ->
-        maybe_publish_position(state, registry, servo_id, position_degrees)
+  defp read_positions(state) do
+    results = Robotis.fast_sync_read(state.robotis, state.servo_ids, :present_position)
 
-      {servo_id, {:error, reason}}, registry ->
+    Enum.each(results, fn
+      {servo_id, {:ok, position_degrees}} ->
+        :ets.update_element(
+          state.servo_table,
+          servo_id,
+          [{@idx_present_position, position_degrees}]
+        )
+
+        maybe_publish_position(state, servo_id, position_degrees)
+
+      {servo_id, {:error, reason}} ->
         Logger.warning("Failed to read position for servo #{servo_id}: #{inspect(reason)}")
         emit_comm_error_diagnostic(state, servo_id, reason)
-        registry
 
-      other, registry ->
+      other ->
         Logger.warning("Unexpected fast_sync_read result: #{inspect(other)}")
-        registry
     end)
+
+    state
+  end
+
+  defp maybe_poll_status(%{status_every_n_ticks: 0} = state), do: state
+
+  defp maybe_poll_status(state) do
+    counter = state.status_tick_counter + 1
+
+    if counter >= state.status_every_n_ticks do
+      poll_status(%{state | status_tick_counter: 0})
+    else
+      %{state | status_tick_counter: counter}
+    end
+  end
+
+  # --- Position publishing ---
+
+  defp maybe_publish_position(state, servo_id, position_degrees) do
+    case :ets.lookup(state.servo_table, servo_id) do
+      [
+        {^servo_id, joint_name, center_angle, reverse?, position_deadband, last_position_raw, _,
+         _, _, _, _, _}
+      ] ->
+        if should_publish_position?(position_degrees, last_position_raw, position_deadband) do
+          joint_angle = degrees_to_joint_angle(position_degrees, center_angle, reverse?)
+          publish_joint_state(state, joint_name, joint_angle)
+
+          :ets.update_element(state.servo_table, servo_id, [
+            {@idx_last_position_raw, position_degrees}
+          ])
+        end
+
+      [] ->
+        :ok
+    end
+  end
+
+  defp should_publish_position?(_position_degrees, nil, _deadband), do: true
+
+  defp should_publish_position?(position_degrees, last, deadband) do
+    position_exceeds_deadband?(position_degrees, last, deadband)
   end
 
   defp emit_comm_error_diagnostic(state, servo_id, reason) do
@@ -359,56 +424,9 @@ defmodule BB.Servo.Robotis.Controller do
     )
   end
 
-  defp get_joint_name(state, servo_id) do
-    case Map.get(state.servo_registry, servo_id) do
-      %{joint_name: name} -> name
-      nil -> String.to_atom("servo_#{servo_id}")
-    end
-  end
-
-  defp maybe_publish_position(_state, registry, servo_id, _position_degrees)
-       when not is_map_key(registry, servo_id) do
-    registry
-  end
-
-  defp maybe_publish_position(state, registry, servo_id, position_degrees) do
-    entry = Map.fetch!(registry, servo_id)
-    maybe_publish_position_for_entry(state, registry, servo_id, position_degrees, entry)
-  end
-
-  defp maybe_publish_position_for_entry(
-         state,
-         registry,
-         servo_id,
-         position_degrees,
-         %{last_position_raw: nil} = entry
-       ) do
-    publish_and_update(state, registry, servo_id, position_degrees, entry)
-  end
-
-  defp maybe_publish_position_for_entry(
-         state,
-         registry,
-         servo_id,
-         position_degrees,
-         %{last_position_raw: last, position_deadband: deadband} = entry
-       ) do
-    if position_exceeds_deadband?(position_degrees, last, deadband) do
-      publish_and_update(state, registry, servo_id, position_degrees, entry)
-    else
-      registry
-    end
-  end
-
   defp position_exceeds_deadband?(position_degrees, last, deadband) do
     deadband_degrees = deadband * 360.0 / @position_resolution
     abs(position_degrees - last) >= deadband_degrees
-  end
-
-  defp publish_and_update(state, registry, servo_id, position_degrees, entry) do
-    position_rad = degrees_to_joint_angle(position_degrees, entry.center_angle, entry.reverse?)
-    publish_joint_state(state, entry.joint_name, position_rad)
-    Map.put(registry, servo_id, %{entry | last_position_raw: position_degrees})
   end
 
   # Robotis library returns position in degrees (0-360), not raw units (0-4095)
@@ -433,29 +451,55 @@ defmodule BB.Servo.Robotis.Controller do
         positions: [position_rad]
       )
 
-    # Publish to sensor path so existing subscribers receive it
     BB.publish(state.bb.robot, [:sensor, state.name, joint_name], msg)
   end
 
-  # Status polling - reads temperature, voltage, current, and error status
-  defp poll_status(%{servo_registry: registry} = state) when map_size(registry) == 0 do
-    state
+  # --- Arming ---
+
+  defp enable_all_torque(%{servo_ids: []}), do: :ok
+
+  defp enable_all_torque(state) do
+    servo_ids = state.servo_ids
+
+    # Read current positions so we can set goals before enabling torque
+    results = Robotis.fast_sync_read(state.robotis, servo_ids, :present_position)
+
+    Enum.each(results, fn
+      {id, {:ok, _position}} ->
+        case Robotis.read_raw(state.robotis, id, :present_position) do
+          {:ok, raw_pos} ->
+            Robotis.write_raw(state.robotis, id, :goal_position, raw_pos, false)
+
+          {:error, reason} ->
+            Logger.warning("Servo #{id} read position failed before arming: #{inspect(reason)}")
+        end
+
+      {id, {:error, reason}} ->
+        Logger.warning("Servo #{id} sync_read failed before arming: #{inspect(reason)}")
+    end)
+
+    values = Enum.map(servo_ids, fn id -> {id, true} end)
+    Robotis.sync_write(state.robotis, :torque_enable, values)
   end
 
-  defp poll_status(state) do
-    servo_ids = Map.keys(state.servo_registry)
+  # --- Status polling ---
 
-    # Read each status parameter from all servos
+  defp poll_status(%{servo_ids: []} = state), do: state
+
+  defp poll_status(state) do
+    servo_ids = state.servo_ids
+
     temp_results = Robotis.fast_sync_read(state.robotis, servo_ids, :present_temperature)
     voltage_results = Robotis.fast_sync_read(state.robotis, servo_ids, :present_input_voltage)
     current_results = Robotis.fast_sync_read(state.robotis, servo_ids, :present_current)
     error_results = Robotis.fast_sync_read(state.robotis, servo_ids, :hardware_error_status)
 
-    # Combine results per servo and publish if changed
     new_last_status =
       Enum.reduce(servo_ids, state.last_status, fn servo_id, acc ->
         status =
           build_status(servo_id, temp_results, voltage_results, current_results, error_results)
+
+        write_servo_status(state.servo_table, servo_id, status)
 
         last = Map.get(acc, servo_id)
 
@@ -470,6 +514,15 @@ defmodule BB.Servo.Robotis.Controller do
       end)
 
     %{state | last_status: new_last_status}
+  end
+
+  defp write_servo_status(table, servo_id, status) do
+    :ets.update_element(table, servo_id, [
+      {@idx_present_temperature, status.temperature},
+      {@idx_present_voltage, status.voltage},
+      {@idx_present_current, status.current},
+      {@idx_hardware_error, status.hardware_error}
+    ])
   end
 
   defp build_status(servo_id, temp_results, voltage_results, current_results, error_results) do
@@ -530,7 +583,15 @@ defmodule BB.Servo.Robotis.Controller do
     end
   end
 
-  # Emit diagnostics for temperature and voltage thresholds
+  # --- Diagnostics ---
+
+  defp get_joint_name(state, servo_id) do
+    case :ets.lookup(state.servo_table, servo_id) do
+      [{^servo_id, joint_name, _, _, _, _, _, _, _, _, _, _}] -> joint_name
+      [] -> String.to_atom("servo_#{servo_id}")
+    end
+  end
+
   defp emit_status_diagnostics(state, servo_id, status, last) do
     emit_temperature_diagnostic(state, servo_id, status.temperature, last)
     emit_voltage_diagnostic(state, servo_id, status.voltage, last)
@@ -645,7 +706,6 @@ defmodule BB.Servo.Robotis.Controller do
     Diagnostic.ok(component, "Voltage normal", values: %{voltage: voltage, servo_id: servo_id})
   end
 
-  # Helper to check if a value crossed a threshold (newly exceeded or returned from)
   defp crossed_threshold?(value, nil, threshold, :up), do: value >= threshold
   defp crossed_threshold?(value, nil, threshold, :down), do: value < threshold
 
@@ -655,7 +715,6 @@ defmodule BB.Servo.Robotis.Controller do
   defp crossed_threshold?(value, last, threshold, :down),
     do: value < threshold and last >= threshold
 
-  # Report hardware error to safety system when a new error is detected
   defp maybe_report_hardware_error(_state, _servo_id, %{hardware_error: nil}, _last), do: :ok
   defp maybe_report_hardware_error(_state, _servo_id, %{hardware_error: 0}, _last), do: :ok
 
@@ -677,10 +736,8 @@ defmodule BB.Servo.Robotis.Controller do
     path = state.bb.path ++ [joint_name]
     alert = HardwareAlert.from_bits(servo_id, error)
 
-    # Report to safety system
     BB.Safety.report_error(state.bb.robot, path, alert)
 
-    # Emit diagnostic
     component = [state.bb.robot | path]
 
     Diagnostic.error(component, "Hardware error detected",
