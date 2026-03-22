@@ -20,6 +20,12 @@ defmodule BB.Servo.Robotis.ControllerTest do
     stub(BB, :subscribe, fn _robot, _path -> :ok end)
   end
 
+  defp init_controller(extra_opts \\ []) do
+    opts = [bb: default_bb_context(), port: "/dev/ttyUSB0"] ++ extra_opts
+    {:ok, state} = Controller.init(opts)
+    state
+  end
+
   describe "init/1" do
     test "succeeds with valid options" do
       stub_robotis_success()
@@ -35,6 +41,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       assert state.control_table == Robotis.ControlTable.XM430
       assert state.name == @controller_name
+      assert is_reference(state.servo_table)
     end
 
     test "uses default baud rate and control table" do
@@ -95,10 +102,31 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
     test "raises when port not provided" do
       opts = [bb: default_bb_context()]
-
-      # Validation happens at compile-time via DSL verifier now.
-      # If init is called directly without required options, Keyword.fetch! raises.
       assert_raise KeyError, fn -> Controller.init(opts) end
+    end
+
+    test "computes status_every_n_ticks from intervals" do
+      stub_robotis_success()
+
+      assert {:ok, state} =
+               Controller.init(
+                 bb: default_bb_context(),
+                 port: "/dev/ttyUSB0",
+                 loop_interval_ms: 10,
+                 status_poll_interval_ms: 1000
+               )
+
+      assert state.status_every_n_ticks == 100
+
+      assert {:ok, state} =
+               Controller.init(
+                 bb: default_bb_context(),
+                 port: "/dev/ttyUSB0",
+                 loop_interval_ms: 10,
+                 status_poll_interval_ms: 0
+               )
+
+      assert state.status_every_n_ticks == 0
     end
   end
 
@@ -109,8 +137,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
       stub(BB, :subscribe, fn _robot, _path -> :ok end)
 
-      opts = [bb: default_bb_context(), port: "/dev/ttyUSB0"]
-      {:ok, state} = Controller.init(opts)
+      state = init_controller()
 
       {:ok, state: state, robotis_pid: robotis_pid}
     end
@@ -161,54 +188,106 @@ defmodule BB.Servo.Robotis.ControllerTest do
                Controller.handle_call(:get_control_table, self(), state)
     end
 
+    test "register_servo inserts into ETS and returns table ref", %{state: state} do
+      stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+
+      {:reply, {:ok, table}, state} =
+        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
+
+      assert is_reference(table)
+      assert state.servo_ids == [1]
+
+      [{1, joint_name, center, reverse?, deadband, last_pos, _, _, _, _, _, goal}] =
+        :ets.lookup(table, 1)
+
+      assert joint_name == :joint1
+      assert center == 0.0
+      assert reverse? == false
+      assert deadband == 2
+      assert last_pos == nil
+      assert goal == nil
+    end
+
     test "list_servos returns registered servo IDs", %{state: state} do
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
 
-      # Register a servo
-      {:reply, :ok, state} =
+      {:reply, {:ok, _table}, state} =
         Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
 
-      {:reply, :ok, state} =
+      {:reply, {:ok, _table}, state} =
         Controller.handle_call({:register_servo, 2, :joint2, 0.0, 2, false}, self(), state)
 
       assert {:reply, {:ok, servo_ids}, _state} =
                Controller.handle_call(:list_servos, self(), state)
 
-      assert Enum.sort(servo_ids) == [1, 2]
+      assert servo_ids == [1, 2]
     end
   end
 
-  describe "handle_cast/2" do
+  describe "tick loop" do
     setup do
       robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
       stub(Robotis, :start_link, fn _opts -> {:ok, robotis_pid} end)
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
       stub(BB, :subscribe, fn _robot, _path -> :ok end)
 
-      opts = [bb: default_bb_context(), port: "/dev/ttyUSB0"]
-      {:ok, state} = Controller.init(opts)
+      state = init_controller()
+
+      # Register a servo
+      {:reply, {:ok, _table}, state} =
+        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
 
       {:ok, state: state, robotis_pid: robotis_pid}
     end
 
-    test "forwards write to Robotis without await", %{state: state, robotis_pid: robotis_pid} do
-      expect(Robotis, :write, fn ^robotis_pid, 1, :goal_position, 2048, false ->
-        :ok
-      end)
+    test "processes pending commands from ETS", %{state: state, robotis_pid: robotis_pid} do
+      # Write a goal position to ETS
+      :ets.update_element(state.servo_table, 1, [{12, 2048}])
 
-      assert {:noreply, _new_state} =
-               Controller.handle_cast({:write, 1, :goal_position, 2048}, state)
+      expect(Robotis, :write_raw, fn ^robotis_pid, 1, :goal_position, 2048, false -> :ok end)
+      stub(Robotis, :fast_sync_read, fn _pid, _ids, _param -> [{1, {:ok, 180.0}}] end)
+      stub(BB, :publish, fn _robot, _path, _msg -> :ok end)
+
+      assert {:noreply, _state} = Controller.handle_info(:tick, state)
+
+      # Goal should be cleared
+      [{1, _, _, _, _, _, _, _, _, _, _, goal}] = :ets.lookup(state.servo_table, 1)
+      assert goal == nil
     end
 
-    test "forwards sync_write to Robotis", %{state: state, robotis_pid: robotis_pid} do
-      values = [{1, 2048}, {2, 1024}]
+    test "skips commands when no goals pending", %{state: state} do
+      reject(&Robotis.write_raw/5)
+      stub(Robotis, :fast_sync_read, fn _pid, _ids, _param -> [{1, {:ok, 180.0}}] end)
+      stub(BB, :publish, fn _robot, _path, _msg -> :ok end)
 
-      expect(Robotis, :sync_write, fn ^robotis_pid, :goal_position, ^values ->
+      assert {:noreply, _state} = Controller.handle_info(:tick, state)
+    end
+
+    test "reads positions and publishes joint state", %{state: state} do
+      test_pid = self()
+
+      stub(Robotis, :fast_sync_read, fn _pid, [1], :present_position ->
+        [{1, {:ok, 190.0}}]
+      end)
+
+      expect(BB, :publish, fn TestRobot, [:sensor, @controller_name, :joint1], msg ->
+        send(test_pid, {:published, msg})
         :ok
       end)
 
-      assert {:noreply, _state} =
-               Controller.handle_cast({:sync_write, :goal_position, values}, state)
+      assert {:noreply, _state} = Controller.handle_info(:tick, state)
+
+      assert_receive {:published, %BB.Message{payload: %BB.Message.Sensor.JointState{}}}
+    end
+
+    test "updates present_position in ETS", %{state: state} do
+      stub(Robotis, :fast_sync_read, fn _pid, _ids, _param -> [{1, {:ok, 195.0}}] end)
+      stub(BB, :publish, fn _robot, _path, _msg -> :ok end)
+
+      Controller.handle_info(:tick, state)
+
+      [{1, _, _, _, _, _, present_pos, _, _, _, _, _}] = :ets.lookup(state.servo_table, 1)
+      assert present_pos == 195.0
     end
   end
 
@@ -256,31 +335,21 @@ defmodule BB.Servo.Robotis.ControllerTest do
         :ok
       end)
 
-      opts = [bb: default_bb_context(), port: "/dev/ttyUSB0"]
-      {:ok, state} = Controller.init(opts)
+      state = init_controller()
 
-      # Simulate a registered servo
-      state = %{
-        state
-        | servo_registry: %{
-            1 => %{joint_name: :joint1, center_angle: 0.0, position_deadband: 2, reverse?: false}
-          }
-      }
+      # Register a servo via ETS
+      {:reply, {:ok, _table}, state} =
+        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
 
       alias BB.Error.Protocol.Robotis.HardwareAlert
 
-      # Simulate status poll with hardware error
       status = %{temperature: 45.0, voltage: 12.0, current: 0.5, hardware_error: 0x04}
 
-      # This tests the maybe_report_hardware_error function directly through the module
-      # Since it's private, we test it through the status changed path
       new_last_status =
         Enum.reduce([1], state.last_status, fn servo_id, acc ->
           last = Map.get(acc, servo_id)
 
-          # Simulate the publish and report logic
           if is_nil(last) or status.hardware_error != Map.get(last, :hardware_error) do
-            # Call report_error directly to test it was invoked
             path = state.bb.path ++ [:servo, servo_id]
             alert = HardwareAlert.from_bits(servo_id, status.hardware_error)
             BB.Safety.report_error(state.bb.robot, path, alert)

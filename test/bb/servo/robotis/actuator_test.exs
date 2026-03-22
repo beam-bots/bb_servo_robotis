@@ -42,21 +42,35 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     }
   end
 
-  defp stub_controller_success do
-    stub(BB.Process, :call, fn _robot, _name, _msg, _timeout -> :ok end)
-    stub(BB.Process, :call, fn _robot, _name, _msg -> :ok end)
-    stub(BB.Process, :cast, fn _robot, _name, _msg -> :ok end)
+  defp stub_controller_success(servo_table) do
+    stub(BB.Process, :call, fn _robot, _name, msg ->
+      case msg do
+        {:write, _id, :torque_enable, false} -> :ok
+        {:register_servo, _, _, _, _, _} -> {:ok, servo_table}
+      end
+    end)
+
     stub(BB, :subscribe, fn _robot, _path -> :ok end)
     stub(BB.Safety, :armed?, fn _robot -> true end)
   end
 
   describe "init/1" do
-    test "succeeds with valid joint limits" do
+    setup do
+      servo_table = :ets.new(:test_init_table, [:set, :public])
+
+      on_exit(fn ->
+        if :ets.info(servo_table) != :undefined, do: :ets.delete(servo_table)
+      end)
+
+      %{servo_table: servo_table}
+    end
+
+    test "succeeds with valid joint limits", %{servo_table: servo_table} do
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-0.5, 0.5, 1.0)
       end)
 
-      stub_controller_success()
+      stub_controller_success(servo_table)
 
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
       assert {:ok, state} = Actuator.init(opts)
@@ -68,12 +82,12 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       assert state.center_angle == 0.0
     end
 
-    test "stores servo_id and controller name" do
+    test "stores servo_id and controller name", %{servo_table: servo_table} do
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-0.5, 0.5, 1.0)
       end)
 
-      stub_controller_success()
+      stub_controller_success(servo_table)
 
       opts = [bb: default_bb_context(), servo_id: 5, controller: @controller_name]
       assert {:ok, state} = Actuator.init(opts)
@@ -127,12 +141,12 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       assert {:stop, %JointConfigError{joint: @joint_name, field: :upper}} = Actuator.init(opts)
     end
 
-    test "initialises servo at center position" do
+    test "initialises servo at center position", %{servo_table: servo_table} do
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-1.0, 1.0, 1.0)
       end)
 
-      stub_controller_success()
+      stub_controller_success(servo_table)
 
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
       assert {:ok, state} = Actuator.init(opts)
@@ -140,7 +154,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       assert state.current_angle == 0.0
     end
 
-    test "disables torque, sends initial position, and registers with controller" do
+    test "disables torque and registers with controller", %{servo_table: servo_table} do
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-1.0, 1.0, 1.0)
       end)
@@ -156,93 +170,90 @@ defmodule BB.Servo.Robotis.ActuatorTest do
 
       expect(BB.Process, :call, fn TestRobot,
                                    @controller_name,
-                                   {:write_raw, 3, :goal_position, _pos} ->
-        send(test_pid, :initial_position_sent)
-        :ok
-      end)
-
-      expect(BB.Process, :call, fn TestRobot,
-                                   @controller_name,
                                    {:register_servo, 3, @joint_name, _center_angle, _deadband,
                                     _reverse?} ->
         send(test_pid, :registered_with_controller)
-        :ok
+        {:ok, servo_table}
       end)
 
       stub(BB, :subscribe, fn _robot, _path -> :ok end)
 
       opts = [bb: default_bb_context(), servo_id: 3, controller: @controller_name]
-      {:ok, _state} = Actuator.init(opts)
+      {:ok, state} = Actuator.init(opts)
 
       assert_receive :torque_disabled
-      assert_receive :initial_position_sent
       assert_receive :registered_with_controller
+      assert state.servo_table == servo_table
     end
   end
 
   describe "position clamping" do
     setup do
+      servo_table = :ets.new(:test_clamp_table, [:set, :public])
+
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-1.0, 1.0, 1.0)
       end)
 
-      stub_controller_success()
+      stub_controller_success(servo_table)
       stub(BB, :publish, fn _robot, _path, _msg -> :ok end)
 
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
 
       {:ok, state} = Actuator.init(opts)
 
-      {:ok, state: state}
-    end
+      :ets.insert(
+        servo_table,
+        {1, :test_joint, 0.0, false, 2, nil, nil, nil, nil, nil, nil, nil}
+      )
 
-    test "clamps position below lower limit", %{state: state} do
-      test_pid = self()
-
-      expect(BB.Process, :cast, fn TestRobot,
-                                   @controller_name,
-                                   {:write_raw, 1, :goal_position, pos} ->
-        send(test_pid, {:position, pos})
-        :ok
+      on_exit(fn ->
+        if :ets.info(servo_table) != :undefined, do: :ets.delete(servo_table)
       end)
 
+      {:ok, state: state, servo_table: servo_table}
+    end
+
+    test "clamps position below lower limit", %{state: state, servo_table: servo_table} do
       Actuator.handle_cast(position_command(-5.0), state)
 
-      assert_receive {:position, pos}
+      [{1, _, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # -1.0 rad from joint center (0), servo center is 2048
       # position = 2048 + (-1.0 / 2π * 4096) = 2048 - 652 = 1396
-      assert pos == 1396
+      assert goal_pos == 1396
     end
 
-    test "clamps position above upper limit", %{state: state} do
-      test_pid = self()
-
-      expect(BB.Process, :cast, fn TestRobot,
-                                   @controller_name,
-                                   {:write_raw, 1, :goal_position, pos} ->
-        send(test_pid, {:position, pos})
-        :ok
-      end)
-
+    test "clamps position above upper limit", %{state: state, servo_table: servo_table} do
       Actuator.handle_cast(position_command(5.0), state)
 
-      assert_receive {:position, pos}
+      [{1, _, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # 1.0 rad from joint center (0), servo center is 2048
       # position = 2048 + (1.0 / 2π * 4096) = 2048 + 652 = 2700
-      assert pos == 2700
+      assert goal_pos == 2700
     end
   end
 
   describe "begin_motion publishing" do
     setup do
+      servo_table = :ets.new(:test_motion_table, [:set, :public])
+
       stub(BB.Robot, :get_joint, fn _robot, @joint_name ->
         joint_with_limits(-1.0, 1.0, 1.0)
       end)
 
-      stub_controller_success()
+      stub_controller_success(servo_table)
 
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
       {:ok, state} = Actuator.init(opts)
+
+      :ets.insert(
+        servo_table,
+        {1, :test_joint, 0.0, false, 2, nil, nil, nil, nil, nil, nil, nil}
+      )
+
+      on_exit(fn ->
+        if :ets.info(servo_table) != :undefined, do: :ets.delete(servo_table)
+      end)
 
       {:ok, state: state}
     end
