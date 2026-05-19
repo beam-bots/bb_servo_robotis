@@ -50,11 +50,6 @@ defmodule BB.Servo.Robotis.Actuator do
         doc: "Name of the Robotis controller in the robot's registry",
         required: true
       ],
-      reverse?: [
-        type: :boolean,
-        doc: "Reverse the servo rotation direction?",
-        default: false
-      ],
       position_deadband: [
         type: :non_neg_integer,
         doc:
@@ -63,17 +58,19 @@ defmodule BB.Servo.Robotis.Actuator do
       ]
     ]
 
+  alias BB.Actuator, as: ActuatorApi
   alias BB.Error.Invalid.JointConfig, as: JointConfigError
   alias BB.Message
   alias BB.Message.Actuator.BeginMotion
   alias BB.Message.Actuator.Command
   alias BB.Process, as: BBProcess
+  alias BB.Transmission
 
   @position_resolution 4096
   @position_center 2048
 
   # ETS tuple field index for command writes
-  @ets_idx_goal_position 12
+  @ets_idx_goal_position 11
 
   @doc """
   Safety disarm callback.
@@ -103,36 +100,44 @@ defmodule BB.Servo.Robotis.Actuator do
     opts = Map.new(opts)
     [name, joint_name | _] = Enum.reverse(opts.bb.path)
     robot = opts.bb.robot.robot()
-
-    reverse? = Map.get(opts, :reverse?, false)
     position_deadband = Map.get(opts, :position_deadband, 2)
+    transmission = ActuatorApi.current_transmission()
 
     with {:ok, joint} <- fetch_joint(robot, joint_name),
          {:ok, limits} <- validate_joint_limits(joint, joint_name) do
-      lower_limit = limits.lower
-      upper_limit = limits.upper
-      range = upper_limit - lower_limit
-      center_angle = (lower_limit + upper_limit) / 2
-      velocity_limit = limits.velocity
+      {motor_lower, motor_upper} = motor_position_limits(limits, transmission)
+      motor_velocity_limit = motor_velocity_limit(limits.velocity, transmission)
+      current_motor_angle = (motor_lower + motor_upper) / 2
 
       state = %{
         bb: opts.bb,
         servo_id: opts.servo_id,
         controller: opts.controller,
-        reverse?: reverse?,
         position_deadband: position_deadband,
-        lower_limit: lower_limit,
-        upper_limit: upper_limit,
-        center_angle: center_angle,
-        range: range,
-        velocity_limit: velocity_limit,
-        current_angle: center_angle,
+        motor_lower: motor_lower,
+        motor_upper: motor_upper,
+        motor_velocity_limit: motor_velocity_limit,
+        current_motor_angle: current_motor_angle,
         name: name,
         joint_name: joint_name
       }
 
       {:ok, state}
     end
+  end
+
+  defp motor_position_limits(limits, nil), do: {limits.lower, limits.upper}
+
+  defp motor_position_limits(limits, transmission) do
+    a = Transmission.apply_position(limits.lower, transmission)
+    b = Transmission.apply_position(limits.upper, transmission)
+    {min(a, b), max(a, b)}
+  end
+
+  defp motor_velocity_limit(velocity, nil), do: velocity
+
+  defp motor_velocity_limit(velocity, transmission) do
+    abs(Transmission.apply_rate(velocity, transmission))
   end
 
   defp fetch_joint(robot, joint_name) do
@@ -207,8 +212,7 @@ defmodule BB.Servo.Robotis.Actuator do
     BBProcess.call(
       state.bb.robot,
       state.controller,
-      {:register_servo, state.servo_id, state.joint_name, state.center_angle,
-       state.position_deadband, state.reverse?}
+      {:register_servo, state.servo_id, state.joint_name, state.position_deadband}
     )
   end
 
@@ -247,20 +251,20 @@ defmodule BB.Servo.Robotis.Actuator do
   defp do_set_position(angle, command_id, state) when is_integer(angle),
     do: do_set_position(angle * 1.0, command_id, state)
 
-  defp do_set_position(angle, command_id, state) do
-    clamped_angle = clamp_angle(angle, state)
-    goal_position = angle_to_position(clamped_angle, state)
+  defp do_set_position(motor_angle, command_id, state) do
+    clamped_motor_angle = clamp_motor_angle(motor_angle, state)
+    goal_position = motor_angle_to_position(clamped_motor_angle)
 
     write_servo_command(state, goal_position)
 
-    travel_distance = abs(state.current_angle - clamped_angle)
-    travel_time_ms = round(travel_distance / state.velocity_limit * 1000)
+    travel_distance = abs(state.current_motor_angle - clamped_motor_angle)
+    travel_time_ms = round(travel_distance / state.motor_velocity_limit * 1000)
     expected_arrival = System.monotonic_time(:millisecond) + travel_time_ms
 
     message_opts =
       [
-        initial_position: state.current_angle,
-        target_position: clamped_angle,
+        initial_position: state.current_motor_angle,
+        target_position: clamped_motor_angle,
         expected_arrival: expected_arrival,
         command_type: :position
       ]
@@ -270,7 +274,7 @@ defmodule BB.Servo.Robotis.Actuator do
 
     BB.publish(state.bb.robot, [:actuator | state.bb.path], message)
 
-    {:noreply, %{state | current_angle: clamped_angle}}
+    {:noreply, %{state | current_motor_angle: clamped_motor_angle}}
   end
 
   defp write_servo_command(state, goal_position) do
@@ -286,24 +290,18 @@ defmodule BB.Servo.Robotis.Actuator do
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp clamp_angle(angle, state) do
-    angle
-    |> max(state.lower_limit)
-    |> min(state.upper_limit)
+  defp clamp_motor_angle(motor_angle, state) do
+    motor_angle
+    |> max(state.motor_lower)
+    |> min(state.motor_upper)
   end
 
-  defp angle_to_position(angle_rad, state) do
-    offset_rad = angle_rad - state.center_angle
-    offset_units = offset_rad / (2 * :math.pi()) * @position_resolution
+  # Map motor-space radians to encoder units. Encoder centre corresponds to
+  # motor zero; one full motor rotation spans @position_resolution units.
+  defp motor_angle_to_position(motor_angle_rad) do
+    offset_units = motor_angle_rad / (2 * :math.pi()) * @position_resolution
 
-    position =
-      if state.reverse? do
-        @position_center - offset_units
-      else
-        @position_center + offset_units
-      end
-
-    round(position)
+    round(@position_center + offset_units)
     |> max(0)
     |> min(@position_resolution - 1)
   end

@@ -190,19 +190,19 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
     test "register_servo inserts into ETS and returns table ref", %{state: state} do
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+      stub(BB.Transmission.Resolver, :resolve_and_subscribe, fn _, _ -> {nil, %{}} end)
 
       {:reply, {:ok, table}, state} =
-        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
+        Controller.handle_call({:register_servo, 1, :joint1, 2}, self(), state)
 
       assert is_reference(table)
       assert state.servo_ids == [1]
 
-      [{1, joint_name, center, reverse?, deadband, last_pos, _, _, _, _, _, goal}] =
+      [{1, joint_name, transmission, deadband, last_pos, _, _, _, _, _, goal}] =
         :ets.lookup(table, 1)
 
       assert joint_name == :joint1
-      assert center == 0.0
-      assert reverse? == false
+      assert transmission == nil
       assert deadband == 2
       assert last_pos == nil
       assert goal == nil
@@ -210,12 +210,13 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
     test "list_servos returns registered servo IDs", %{state: state} do
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+      stub(BB.Transmission.Resolver, :resolve_and_subscribe, fn _, _ -> {nil, %{}} end)
 
       {:reply, {:ok, _table}, state} =
-        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
+        Controller.handle_call({:register_servo, 1, :joint1, 2}, self(), state)
 
       {:reply, {:ok, _table}, state} =
-        Controller.handle_call({:register_servo, 2, :joint2, 0.0, 2, false}, self(), state)
+        Controller.handle_call({:register_servo, 2, :joint2, 2}, self(), state)
 
       assert {:reply, {:ok, servo_ids}, _state} =
                Controller.handle_call(:list_servos, self(), state)
@@ -230,19 +231,20 @@ defmodule BB.Servo.Robotis.ControllerTest do
       stub(Robotis, :start_link, fn _opts -> {:ok, robotis_pid} end)
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
       stub(BB, :subscribe, fn _robot, _path -> :ok end)
+      stub(BB.Transmission.Resolver, :resolve_and_subscribe, fn _, _ -> {nil, %{}} end)
 
       state = init_controller()
 
       # Register a servo
       {:reply, {:ok, _table}, state} =
-        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
+        Controller.handle_call({:register_servo, 1, :joint1, 2}, self(), state)
 
       {:ok, state: state, robotis_pid: robotis_pid}
     end
 
     test "processes pending commands from ETS", %{state: state, robotis_pid: robotis_pid} do
-      # Write a goal position to ETS
-      :ets.update_element(state.servo_table, 1, [{12, 2048}])
+      # Write a goal position to ETS at the goal_position index
+      :ets.update_element(state.servo_table, 1, [{11, 2048}])
 
       expect(Robotis, :write_raw, fn ^robotis_pid, 1, :goal_position, 2048, false -> :ok end)
       stub(Robotis, :fast_sync_read, fn _pid, _ids, _param -> [{1, {:ok, 180.0}}] end)
@@ -251,7 +253,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert {:noreply, _state} = Controller.handle_info(:tick, state)
 
       # Goal should be cleared
-      [{1, _, _, _, _, _, _, _, _, _, _, goal}] = :ets.lookup(state.servo_table, 1)
+      [{1, _, _, _, _, _, _, _, _, _, goal}] = :ets.lookup(state.servo_table, 1)
       assert goal == nil
     end
 
@@ -286,7 +288,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       Controller.handle_info(:tick, state)
 
-      [{1, _, _, _, _, _, present_pos, _, _, _, _, _}] = :ets.lookup(state.servo_table, 1)
+      [{1, _, _, _, _, present_pos, _, _, _, _, _}] = :ets.lookup(state.servo_table, 1)
       assert present_pos == 195.0
     end
   end
@@ -329,6 +331,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       stub(Robotis, :start_link, fn _opts -> {:ok, self()} end)
       stub(BB.Safety, :register, fn _module, _opts -> :ok end)
       stub(BB, :subscribe, fn _robot, _path -> :ok end)
+      stub(BB.Transmission.Resolver, :resolve_and_subscribe, fn _, _ -> {nil, %{}} end)
 
       expect(BB.Safety, :report_error, fn robot, path, error ->
         send(test_pid, {:error_reported, robot, path, error})
@@ -339,7 +342,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       # Register a servo via ETS
       {:reply, {:ok, _table}, state} =
-        Controller.handle_call({:register_servo, 1, :joint1, 0.0, 2, false}, self(), state)
+        Controller.handle_call({:register_servo, 1, :joint1, 2}, self(), state)
 
       alias BB.Error.Protocol.Robotis.HardwareAlert
 

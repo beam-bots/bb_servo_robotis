@@ -46,7 +46,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     stub(BB.Process, :call, fn _robot, _name, msg ->
       case msg do
         {:write, _id, :torque_enable, false} -> :ok
-        {:register_servo, _, _, _, _, _} -> {:ok, servo_table}
+        {:register_servo, _, _, _} -> {:ok, servo_table}
       end
     end)
 
@@ -75,11 +75,9 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
       assert {:ok, state} = Actuator.init(opts)
 
-      assert state.lower_limit == -0.5
-      assert state.upper_limit == 0.5
-      assert state.velocity_limit == 1.0
-      assert state.range == 1.0
-      assert state.center_angle == 0.0
+      assert state.motor_lower == -0.5
+      assert state.motor_upper == 0.5
+      assert state.motor_velocity_limit == 1.0
     end
 
     test "stores servo_id and controller name", %{servo_table: servo_table} do
@@ -151,7 +149,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       opts = [bb: default_bb_context(), servo_id: 1, controller: @controller_name]
       assert {:ok, state} = Actuator.init(opts)
 
-      assert state.current_angle == 0.0
+      assert state.current_motor_angle == 0.0
     end
 
     test "disables torque and registers with controller", %{servo_table: servo_table} do
@@ -170,8 +168,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
 
       expect(BB.Process, :call, fn TestRobot,
                                    @controller_name,
-                                   {:register_servo, 3, @joint_name, _center_angle, _deadband,
-                                    _reverse?} ->
+                                   {:register_servo, 3, @joint_name, _deadband} ->
         send(test_pid, :registered_with_controller)
         {:ok, servo_table}
       end)
@@ -204,7 +201,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
 
       :ets.insert(
         servo_table,
-        {1, :test_joint, 0.0, false, 2, nil, nil, nil, nil, nil, nil, nil}
+        {1, :test_joint, nil, 2, nil, nil, nil, nil, nil, nil, nil}
       )
 
       on_exit(fn ->
@@ -217,7 +214,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     test "clamps position below lower limit", %{state: state, servo_table: servo_table} do
       Actuator.handle_cast(position_command(-5.0), state)
 
-      [{1, _, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
+      [{1, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # -1.0 rad from joint center (0), servo center is 2048
       # position = 2048 + (-1.0 / 2π * 4096) = 2048 - 652 = 1396
       assert goal_pos == 1396
@@ -226,7 +223,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     test "clamps position above upper limit", %{state: state, servo_table: servo_table} do
       Actuator.handle_cast(position_command(5.0), state)
 
-      [{1, _, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
+      [{1, _, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # 1.0 rad from joint center (0), servo center is 2048
       # position = 2048 + (1.0 / 2π * 4096) = 2048 + 652 = 2700
       assert goal_pos == 2700
