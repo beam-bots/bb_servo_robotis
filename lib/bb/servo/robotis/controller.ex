@@ -210,14 +210,16 @@ defmodule BB.Servo.Robotis.Controller do
 
   # --- Handle calls ---
 
+  alias BB.Transmission
+  alias BB.Transmission.Resolver, as: TransmissionResolver
+
   @impl BB.Controller
   def handle_call(
         {:register_servo, servo_id, joint_name, position_deadband},
         _from,
         state
       ) do
-    {transmission, _subs} =
-      BB.Transmission.Resolver.resolve_and_subscribe(state.bb.robot, joint_name)
+    {transmission, _subs} = TransmissionResolver.resolve_and_subscribe(state.bb.robot, joint_name)
 
     :ets.insert(state.servo_table, {
       servo_id,
@@ -439,7 +441,7 @@ defmodule BB.Servo.Robotis.Controller do
 
     case transmission do
       nil -> motor_rad
-      t -> BB.Transmission.unapply_position(motor_rad, t)
+      t -> Transmission.unapply_position(motor_rad, t)
     end
   end
 
