@@ -104,14 +104,14 @@ defmodule BB.Servo.Robotis.Controller do
 
   @position_resolution 4096
 
-  # ETS tuple field indices (positions 2-5 are config, matched via pattern)
-  @idx_last_position_raw 6
-  @idx_present_position 7
-  @idx_present_temperature 8
-  @idx_present_voltage 9
-  @idx_present_current 10
-  @idx_hardware_error 11
-  @idx_goal_position 12
+  # ETS tuple field indices (positions 2-3 are config, matched via pattern)
+  @idx_last_position_raw 4
+  @idx_present_position 5
+  @idx_present_temperature 6
+  @idx_present_voltage 7
+  @idx_present_current 8
+  @idx_hardware_error 9
+  @idx_goal_position 10
 
   # Diagnostic thresholds
   @temp_warning_threshold 55.0
@@ -212,15 +212,13 @@ defmodule BB.Servo.Robotis.Controller do
 
   @impl BB.Controller
   def handle_call(
-        {:register_servo, servo_id, joint_name, center_angle, position_deadband, reverse?},
+        {:register_servo, servo_id, actuator_path, position_deadband},
         _from,
         state
       ) do
     :ets.insert(state.servo_table, {
       servo_id,
-      joint_name,
-      center_angle,
-      reverse?,
+      actuator_path,
       position_deadband,
       _last_position_raw = nil,
       _present_position = nil,
@@ -332,7 +330,7 @@ defmodule BB.Servo.Robotis.Controller do
     entries = :ets.tab2list(state.servo_table)
 
     commands =
-      for {id, _, _, _, _, _, _, _, _, _, _, goal_pos} <- entries,
+      for {id, _, _, _, _, _, _, _, _, goal_pos} <- entries,
           goal_pos != nil,
           do: {id, goal_pos}
 
@@ -392,12 +390,14 @@ defmodule BB.Servo.Robotis.Controller do
   defp maybe_publish_position(state, servo_id, position_degrees) do
     case :ets.lookup(state.servo_table, servo_id) do
       [
-        {^servo_id, joint_name, center_angle, reverse?, position_deadband, last_position_raw, _,
-         _, _, _, _, _}
+        {^servo_id, actuator_path, position_deadband, last_position_raw, _, _, _, _, _, _}
       ] ->
         if should_publish_position?(position_degrees, last_position_raw, position_deadband) do
-          joint_angle = degrees_to_joint_angle(position_degrees, center_angle, reverse?)
-          publish_joint_state(state, joint_name, joint_angle)
+          # Robotis returns position in degrees (0-360); centre at 180° corresponds
+          # to motor zero. Convert to motor-space radians and let the transmission
+          # handle the rest on the way out.
+          motor_rad = (position_degrees - 180.0) * :math.pi() / 180.0
+          publish_joint_state(state, actuator_path, motor_rad)
 
           :ets.update_element(state.servo_table, servo_id, [
             {@idx_last_position_raw, position_degrees}
@@ -429,29 +429,21 @@ defmodule BB.Servo.Robotis.Controller do
     abs(position_degrees - last) >= deadband_degrees
   end
 
-  # Robotis library returns position in degrees (0-360), not raw units (0-4095)
-  # Servo center (180°) corresponds to joint center_angle
-  defp degrees_to_joint_angle(position_degrees, center_angle, reverse?) do
-    servo_offset_deg = position_degrees - 180.0
+  defp publish_joint_state(state, actuator_path, motor_position) do
+    joint_name = joint_name_from_path(actuator_path)
 
-    servo_offset_rad =
-      if reverse? do
-        -servo_offset_deg * :math.pi() / 180.0
-      else
-        servo_offset_deg * :math.pi() / 180.0
-      end
-
-    center_angle + servo_offset_rad
-  end
-
-  defp publish_joint_state(state, joint_name, position_rad) do
-    {:ok, msg} =
+    {:ok, motor_msg} =
       Message.new(JointState, joint_name,
         names: [joint_name],
-        positions: [position_rad]
+        positions: [motor_position]
       )
 
-    BB.publish(state.bb.robot, [:sensor, state.name, joint_name], msg)
+    joint_msg = BB.Actuator.to_joint_space(state.bb.robot, actuator_path, motor_msg)
+    BB.publish(state.bb.robot, [:sensor, state.name, joint_name], joint_msg)
+  end
+
+  defp joint_name_from_path(actuator_path) do
+    actuator_path |> Enum.reverse() |> Enum.at(1)
   end
 
   # --- Arming ---
@@ -587,7 +579,7 @@ defmodule BB.Servo.Robotis.Controller do
 
   defp get_joint_name(state, servo_id) do
     case :ets.lookup(state.servo_table, servo_id) do
-      [{^servo_id, joint_name, _, _, _, _, _, _, _, _, _, _}] -> joint_name
+      [{^servo_id, actuator_path, _, _, _, _, _, _, _, _}] -> joint_name_from_path(actuator_path)
       [] -> String.to_atom("servo_#{servo_id}")
     end
   end

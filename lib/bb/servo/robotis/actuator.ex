@@ -6,9 +6,11 @@ defmodule BB.Servo.Robotis.Actuator do
   @moduledoc """
   An actuator that uses a Robotis controller to drive a Dynamixel servo.
 
-  This actuator derives its configuration from the joint constraints defined in the robot:
-  - Position limits from `joint.limits.lower` and `joint.limits.upper`
-  - Velocity limit from `joint.limits.velocity`
+  Configuration is derived from the joint's `motor_profile` injected by
+  `BB.Actuator.Server`:
+
+  - Position limits from `motor_profile.motor_lower` / `motor_upper`
+  - Velocity limit from `motor_profile.motor_velocity_limit`
   - Position range maps to the servo's goal_position register
 
   When initialised, the actuator:
@@ -17,13 +19,12 @@ defmodule BB.Servo.Robotis.Actuator do
   3. Subscribes to position commands
 
   When a position command is received, the actuator:
-  1. Clamps the position to joint limits
+  1. Clamps the position to motor limits
   2. Converts to servo position units (0-4095 for 360 degrees)
   3. Writes goal_position to the controller's ETS table
-  4. Publishes a `BB.Message.Actuator.BeginMotion` message
-
-  The controller picks up pending commands on its next loop tick and writes them
-  to the serial bus.
+  4. Publishes a `BB.Message.Actuator.BeginMotion` via
+     `BB.Actuator.publish_begin_motion/3` (which handles the
+     motor → joint-space conversion)
 
   ## Example DSL Usage
 
@@ -50,11 +51,6 @@ defmodule BB.Servo.Robotis.Actuator do
         doc: "Name of the Robotis controller in the robot's registry",
         required: true
       ],
-      reverse?: [
-        type: :boolean,
-        doc: "Reverse the servo rotation direction?",
-        default: false
-      ],
       position_deadband: [
         type: :non_neg_integer,
         doc:
@@ -65,7 +61,6 @@ defmodule BB.Servo.Robotis.Actuator do
 
   alias BB.Error.Invalid.JointConfig, as: JointConfigError
   alias BB.Message
-  alias BB.Message.Actuator.BeginMotion
   alias BB.Message.Actuator.Command
   alias BB.Process, as: BBProcess
 
@@ -73,15 +68,12 @@ defmodule BB.Servo.Robotis.Actuator do
   @position_center 2048
 
   # ETS tuple field index for command writes
-  @ets_idx_goal_position 12
+  @ets_idx_goal_position 10
 
   @doc """
   Safety disarm callback.
 
   Returns :ok because torque management is handled by the controller.
-  The controller receives all registered servo IDs and disables torque
-  for all of them in a single sync_write operation, which is more
-  efficient for bus-based protocols.
   """
   @impl BB.Actuator
   def disarm(_opts), do: :ok
@@ -99,34 +91,31 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
+  @impl BB.Actuator
+  def handle_options(new_opts, state) do
+    motor_profile = Keyword.fetch!(new_opts, :motor_profile)
+
+    {:ok,
+     %{
+       state
+       | motor_profile: motor_profile,
+         current_motor_angle: clamp_motor_angle(state.current_motor_angle, motor_profile)
+     }}
+  end
+
   defp build_state(opts) do
     opts = Map.new(opts)
     [name, joint_name | _] = Enum.reverse(opts.bb.path)
-    robot = opts.bb.robot.robot()
+    motor_profile = opts.motor_profile
 
-    reverse? = Map.get(opts, :reverse?, false)
-    position_deadband = Map.get(opts, :position_deadband, 2)
-
-    with {:ok, joint} <- fetch_joint(robot, joint_name),
-         {:ok, limits} <- validate_joint_limits(joint, joint_name) do
-      lower_limit = limits.lower
-      upper_limit = limits.upper
-      range = upper_limit - lower_limit
-      center_angle = (lower_limit + upper_limit) / 2
-      velocity_limit = limits.velocity
-
+    with :ok <- validate_motor_profile(motor_profile, joint_name) do
       state = %{
         bb: opts.bb,
         servo_id: opts.servo_id,
         controller: opts.controller,
-        reverse?: reverse?,
-        position_deadband: position_deadband,
-        lower_limit: lower_limit,
-        upper_limit: upper_limit,
-        center_angle: center_angle,
-        range: range,
-        velocity_limit: velocity_limit,
-        current_angle: center_angle,
+        position_deadband: Map.get(opts, :position_deadband, 2),
+        motor_profile: motor_profile,
+        current_motor_angle: motor_profile.motor_initial_position,
         name: name,
         joint_name: joint_name
       }
@@ -135,61 +124,37 @@ defmodule BB.Servo.Robotis.Actuator do
     end
   end
 
-  defp fetch_joint(robot, joint_name) do
-    case BB.Robot.get_joint(robot, joint_name) do
-      nil ->
-        {:error,
-         %JointConfigError{joint: joint_name, field: nil, message: "Joint not found in robot"}}
-
-      joint ->
-        {:ok, joint}
-    end
-  end
-
-  defp validate_joint_limits(%{type: :continuous}, joint_name) do
-    {:error,
-     %JointConfigError{
-       joint: joint_name,
-       field: :type,
-       value: :continuous,
-       expected: [:revolute, :prismatic],
-       message: "Continuous joints require position limits for servo control"
-     }}
-  end
-
-  defp validate_joint_limits(%{limits: nil}, joint_name) do
-    {:error,
-     %JointConfigError{
-       joint: joint_name,
-       field: :limits,
-       value: nil,
-       message: "Joint must have limits defined for servo control"
-     }}
-  end
-
-  defp validate_joint_limits(%{limits: %{lower: nil}}, joint_name) do
+  defp validate_motor_profile(%{motor_lower: nil}, joint_name) do
     {:error,
      %JointConfigError{
        joint: joint_name,
        field: :lower,
        value: nil,
-       message: "Joint must have lower limit defined"
+       message: "Joint must have a lower limit defined for servo control"
      }}
   end
 
-  defp validate_joint_limits(%{limits: %{upper: nil}}, joint_name) do
+  defp validate_motor_profile(%{motor_upper: nil}, joint_name) do
     {:error,
      %JointConfigError{
        joint: joint_name,
        field: :upper,
        value: nil,
-       message: "Joint must have upper limit defined"
+       message: "Joint must have an upper limit defined for servo control"
      }}
   end
 
-  defp validate_joint_limits(%{limits: limits}, _joint_name) do
-    {:ok, limits}
+  defp validate_motor_profile(%{motor_velocity_limit: nil}, joint_name) do
+    {:error,
+     %JointConfigError{
+       joint: joint_name,
+       field: :velocity,
+       value: nil,
+       message: "Joint must have a velocity limit defined for servo control"
+     }}
   end
+
+  defp validate_motor_profile(_profile, _joint_name), do: :ok
 
   defp disable_torque(state) do
     case BBProcess.call(
@@ -207,8 +172,7 @@ defmodule BB.Servo.Robotis.Actuator do
     BBProcess.call(
       state.bb.robot,
       state.controller,
-      {:register_servo, state.servo_id, state.joint_name, state.center_angle,
-       state.position_deadband, state.reverse?}
+      {:register_servo, state.servo_id, state.bb.path, state.position_deadband}
     )
   end
 
@@ -247,30 +211,28 @@ defmodule BB.Servo.Robotis.Actuator do
   defp do_set_position(angle, command_id, state) when is_integer(angle),
     do: do_set_position(angle * 1.0, command_id, state)
 
-  defp do_set_position(angle, command_id, state) do
-    clamped_angle = clamp_angle(angle, state)
-    goal_position = angle_to_position(clamped_angle, state)
+  defp do_set_position(motor_angle, command_id, state) do
+    clamped_motor_angle = clamp_motor_angle(motor_angle, state.motor_profile)
+    goal_position = motor_angle_to_position(clamped_motor_angle)
 
     write_servo_command(state, goal_position)
 
-    travel_distance = abs(state.current_angle - clamped_angle)
-    travel_time_ms = round(travel_distance / state.velocity_limit * 1000)
+    travel_distance = abs(state.current_motor_angle - clamped_motor_angle)
+    travel_time_ms = round(travel_distance / state.motor_profile.motor_velocity_limit * 1000)
     expected_arrival = System.monotonic_time(:millisecond) + travel_time_ms
 
     message_opts =
       [
-        initial_position: state.current_angle,
-        target_position: clamped_angle,
+        initial_position: state.current_motor_angle,
+        target_position: clamped_motor_angle,
         expected_arrival: expected_arrival,
         command_type: :position
       ]
       |> maybe_add_opt(:command_id, command_id)
 
-    message = Message.new!(BeginMotion, state.joint_name, message_opts)
+    BB.Actuator.publish_begin_motion(state.bb.robot, state.bb.path, message_opts)
 
-    BB.publish(state.bb.robot, [:actuator | state.bb.path], message)
-
-    {:noreply, %{state | current_angle: clamped_angle}}
+    {:noreply, %{state | current_motor_angle: clamped_motor_angle}}
   end
 
   defp write_servo_command(state, goal_position) do
@@ -286,24 +248,18 @@ defmodule BB.Servo.Robotis.Actuator do
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp clamp_angle(angle, state) do
-    angle
-    |> max(state.lower_limit)
-    |> min(state.upper_limit)
+  defp clamp_motor_angle(motor_angle, %{motor_lower: lower, motor_upper: upper}) do
+    motor_angle
+    |> max(lower)
+    |> min(upper)
   end
 
-  defp angle_to_position(angle_rad, state) do
-    offset_rad = angle_rad - state.center_angle
-    offset_units = offset_rad / (2 * :math.pi()) * @position_resolution
+  # Map motor-space radians to encoder units. Encoder centre corresponds to
+  # motor zero; one full motor rotation spans @position_resolution units.
+  defp motor_angle_to_position(motor_angle_rad) do
+    offset_units = motor_angle_rad / (2 * :math.pi()) * @position_resolution
 
-    position =
-      if state.reverse? do
-        @position_center - offset_units
-      else
-        @position_center + offset_units
-      end
-
-    round(position)
+    round(@position_center + offset_units)
     |> max(0)
     |> min(@position_resolution - 1)
   end
