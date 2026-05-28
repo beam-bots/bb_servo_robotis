@@ -86,20 +86,30 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
     end
   end
 
-  describe "application module" do
-    test "sets the device path on the robot child spec" do
+  describe "application config" do
+    test "writes the device default to config/config.exs" do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install")
-      |> assert_has_patch("lib/test/application.ex", ~s'''
-      + |    children = [{Test.Robot, [params: [config: [robotis: [device: "/dev/ttyUSB0"]]]]}]
-      ''')
+      |> assert_creates("config/config.exs", """
+      import Config
+      config :test, Test.Robot, params: [config: [robotis: [device: "/dev/ttyUSB0"]]]
+      """)
     end
 
     test "honours a custom --device option" do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install", ["--device", "/dev/ttyACM0"])
+      |> assert_creates("config/config.exs", """
+      import Config
+      config :test, Test.Robot, params: [config: [robotis: [device: "/dev/ttyACM0"]]]
+      """)
+    end
+
+    test "reads the robot child opts from the application env" do
+      project_with_robot()
+      |> Igniter.compose_task("bb_servo_robotis.install")
       |> assert_has_patch("lib/test/application.ex", ~s'''
-      + |    children = [{Test.Robot, [params: [config: [robotis: [device: "/dev/ttyACM0"]]]]}]
+      + |    children = [{Test.Robot, Application.get_env(:test, Test.Robot, [])}]
       ''')
     end
   end

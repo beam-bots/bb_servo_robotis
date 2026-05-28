@@ -66,8 +66,10 @@ if Code.ensure_loaded?(Igniter) do
         bridge_code(bridge_name, name)
       )
       |> BB.Igniter.add_param_group(robot_module, [:config, @param_group], param_group_body())
-      |> BB.Igniter.set_robot_opts(robot_module,
-        params: [config: [{@param_group, [device: device]}]]
+      |> BB.Igniter.set_robot_param_default(
+        robot_module,
+        [:config, @param_group, :device],
+        device
       )
       |> Igniter.add_notice(topology_snippet(name))
     end
