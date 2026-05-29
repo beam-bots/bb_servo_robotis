@@ -54,8 +54,8 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
 - **Controller** (`lib/bb/servo/robotis/controller.ex`) - GenServer wrapping the `Robotis` library.
   Owns a shared ETS table and runs a fixed-rate control loop (default 100Hz) that reads pending
   commands from ETS, writes them to the bus, reads positions via `fast_sync_read`, and publishes
-  `JointState` messages. Status polling runs on a counter within the same loop. Implements
-  `BB.Controller` and `BB.Safety` behaviours.
+  `JointState` messages. Status polling runs on a counter within the same loop. Implements the
+  `BB.Controller` behaviour, including its `disarm/1` safety callback.
 
 - **Actuator** (`lib/bb/servo/robotis/actuator.ex`) - GenServer that receives position commands
   (radians), converts to servo position (0-4095), writes `goal_position` to the controller's
@@ -82,7 +82,7 @@ The library uses BB's:
 - `BB.Actuator` behaviour for actuator lifecycle
 - `BB.Bridge` behaviour for parameter bridge
 - `BB.Message` for typed message payloads
-- `BB.Safety` for arm/disarm handling
+- `BB.Safety` API to register the controller and report hardware errors
 - `BB.publish`/`BB.subscribe` for hierarchical PubSub by path
 - `BB.Process.call` to communicate with sibling processes via the robot registry
 - ETS for low-latency command passing from actuators to controller
