@@ -281,7 +281,7 @@ For a joint with limits `-90 degrees` to `+90 degrees`:
 
 ### Safety
 
-The controller implements `BB.Safety`:
+The controller implements the `BB.Controller` behaviour's `disarm/1` safety callback:
 
 - **On arm** - Torque is enabled on all registered servos
 - **On disarm** - Torque is disabled (or held, if configured)
