@@ -11,7 +11,9 @@ SPDX-License-Identifier: Apache-2.0
 [![CI](https://github.com/beam-bots/bb_servo_robotis/actions/workflows/ci.yml/badge.svg)](https://github.com/beam-bots/bb_servo_robotis/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache--2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Hex version badge](https://img.shields.io/hexpm/v/bb_servo_robotis.svg)](https://hex.pm/packages/bb_servo_robotis)
+[![Hexdocs badge](https://img.shields.io/badge/docs-hexdocs-purple)](https://hexdocs.pm/bb_servo_robotis)
 [![REUSE status](https://api.reuse.software/badge/github.com/beam-bots/bb_servo_robotis)](https://api.reuse.software/info/github.com/beam-bots/bb_servo_robotis)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beam-bots/bb_servo_robotis)
 
 # BB.Servo.Robotis
 
