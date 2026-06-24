@@ -288,33 +288,46 @@ defmodule BB.Servo.Robotis.ControllerTest do
   end
 
   describe "disarm/1" do
-    test "disables torque on all registered servos" do
+    test "disables torque on all registered servos with acknowledged writes" do
       test_pid = self()
       robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
 
-      expect(Robotis, :sync_write, fn ^robotis_pid, :torque_enable, values ->
-        send(test_pid, {:sync_write, values})
+      expect(Robotis, :write, 3, fn ^robotis_pid, id, :torque_enable, false, true ->
+        send(test_pid, {:write, id})
         :ok
       end)
 
       opts = [robotis: robotis_pid, servo_ids: [1, 2, 3]]
       assert :ok = Controller.disarm(opts)
 
-      assert_receive {:sync_write, values}
-      assert values == [{1, false}, {2, false}, {3, false}]
+      assert_receive {:write, 1}
+      assert_receive {:write, 2}
+      assert_receive {:write, 3}
     end
 
     test "returns ok when no servos registered" do
       robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+      reject(&Robotis.write/5)
       opts = [robotis: robotis_pid, servo_ids: []]
       assert :ok = Controller.disarm(opts)
     end
 
-    test "returns ok when process not alive" do
+    test "returns an error when a torque-disable write is rejected" do
+      robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+
+      stub(Robotis, :write, fn ^robotis_pid, id, :torque_enable, false, true ->
+        if id == 2, do: {:error, :timeout}, else: :ok
+      end)
+
+      opts = [robotis: robotis_pid, servo_ids: [1, 2, 3]]
+      assert {:error, {:servo, 2, :torque_enable, :timeout}} = Controller.disarm(opts)
+    end
+
+    test "returns an error when the process is not alive" do
       dead_pid = spawn(fn -> :ok end)
       Process.sleep(10)
       opts = [robotis: dead_pid, servo_ids: [1]]
-      assert :ok = Controller.disarm(opts)
+      assert {:error, {:exit, _reason}} = Controller.disarm(opts)
     end
   end
 
