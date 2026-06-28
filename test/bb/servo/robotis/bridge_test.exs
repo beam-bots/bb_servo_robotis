@@ -30,8 +30,8 @@ defmodule BB.Servo.Robotis.BridgeTest do
   end
 
   describe "init/1" do
-    test "succeeds with valid options" do
-      stub_controller_queries()
+    test "succeeds without calling the controller (control table is fetched lazily)" do
+      reject(&BB.Process.call/3)
 
       opts = [
         bb: default_bb_context(),
@@ -41,6 +41,19 @@ defmodule BB.Servo.Robotis.BridgeTest do
       assert {:ok, state} = Bridge.init(opts)
       assert state.robot == TestRobot
       assert state.controller == @controller_name
+      assert state.control_table == nil
+    end
+  end
+
+  describe "lazy control table" do
+    test "fetches and memoises the control table on first use" do
+      stub_controller_queries()
+
+      opts = [bb: default_bb_context(), controller: @controller_name]
+      {:ok, state} = Bridge.init(opts)
+      assert state.control_table == nil
+
+      assert {:ok, _params, state} = Bridge.list_remote(state)
       assert state.control_table == Robotis.ControlTable.XM430
     end
   end
