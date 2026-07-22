@@ -55,7 +55,7 @@ end
 
 - U2D2 USB adapter or compatible serial interface
 - Dynamixel servos using Protocol 2.0
-- BB framework (`~> 0.7`)
+- BB framework (`~> 0.21`)
 
 ## Usage
 
@@ -65,11 +65,13 @@ Define a controller and joints with servo actuators in your robot DSL:
 defmodule MyRobot do
   use BB
 
-  controller :dynamixel, {BB.Servo.Robotis.Controller,
-    port: "/dev/ttyUSB0",
-    baud_rate: 1_000_000,
-    control_table: Robotis.ControlTable.XM430
-  }
+  controllers do
+    controller :dynamixel, {BB.Servo.Robotis.Controller,
+      port: "/dev/ttyUSB0",
+      baud_rate: 1_000_000,
+      control_table: Robotis.ControlTable.XM430
+    }
+  end
 
   topology do
     link :base do
@@ -158,9 +160,9 @@ bus. Define one controller per U2D2 adapter. The controller handles:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `port` | string | required | Serial port path (e.g., "/dev/ttyUSB0") |
-| `baud_rate` | integer | 57600 | Baud rate in bps |
+| `baud_rate` | integer | 1_000_000 | Baud rate in bps |
 | `control_table` | module | `Robotis.ControlTable.XM430` | Servo control table (anything that implements the `Robotis.ControlTable` behaviour) |
-| `poll_interval_ms` | integer | 50 | Position feedback polling interval (20Hz default) |
+| `loop_interval_ms` | integer | 10 | Control loop interval (100 Hz default) |
 | `status_poll_interval_ms` | integer | 1000 | Status polling interval (0 to disable) |
 | `disarm_action` | atom | `:disable_torque` | Action on disarm (`:disable_torque` or `:hold`) |
 
@@ -174,8 +176,18 @@ bus. Define one controller per U2D2 adapter. The controller handles:
 |--------|------|---------|-------------|
 | `servo_id` | 1-253 | required | Dynamixel servo ID |
 | `controller` | atom | required | Name of the controller in robot registry |
-| `reverse?` | boolean | false | Reverse rotation direction |
 | `position_deadband` | integer | 2 | Minimum position change (raw units) to publish feedback |
+
+To reverse the servo direction, configure the actuator's transmission with
+`reversed?`:
+
+```elixir
+actuator :servo, {BB.Servo.Robotis.Actuator, servo_id: 1, controller: :dynamixel} do
+  transmission do
+    reversed? true
+  end
+end
+```
 
 **Behaviour:**
 

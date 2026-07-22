@@ -6,9 +6,9 @@ defmodule BB.Servo.Robotis do
   @moduledoc """
   Beam Bots integration for Robotis/Dynamixel servos.
 
-  This library provides controller, actuator, and sensor modules for integrating
-  Dynamixel servos with the Beam Bots robotics framework. It uses the `robotis`
-  hex package for low-level serial communication.
+  This library provides controller, actuator, and parameter bridge modules for
+  integrating Dynamixel servos with the Beam Bots robotics framework. It uses
+  the `robotis` hex package for low-level serial communication.
 
   ## Features
 
@@ -29,11 +29,13 @@ defmodule BB.Servo.Robotis do
       defmodule MyRobot do
         use BB
 
-        controller :dynamixel, {BB.Servo.Robotis.Controller,
-          port: "/dev/ttyUSB0",
-          baud_rate: 1_000_000,
-          control_table: Robotis.ControlTable.XM430
-        }
+        controllers do
+          controller :dynamixel, {BB.Servo.Robotis.Controller,
+            port: "/dev/ttyUSB0",
+            baud_rate: 1_000_000,
+            control_table: Robotis.ControlTable.XM430
+          }
+        end
 
         topology do
           link :base do
@@ -44,12 +46,6 @@ defmodule BB.Servo.Robotis do
                 servo_id: 1,
                 controller: :dynamixel
               }
-
-              sensor :position, {BB.Servo.Robotis.Sensor,
-                servo_id: 1,
-                controller: :dynamixel,
-                poll_interval_ms: 20
-              }
             end
           end
         end
@@ -59,6 +55,6 @@ defmodule BB.Servo.Robotis do
 
   - `BB.Servo.Robotis.Controller` - Manages the serial connection to the U2D2
   - `BB.Servo.Robotis.Actuator` - Sends position commands to servos
-  - `BB.Servo.Robotis.Sensor` - Reads actual position from servos
+  - `BB.Servo.Robotis.Bridge` - Exposes servo parameters through the BB parameter system
   """
 end

@@ -28,10 +28,12 @@ defmodule BB.Servo.Robotis.Actuator do
 
   ## Example DSL Usage
 
-      controller :dynamixel, {BB.Servo.Robotis.Controller,
-        port: "/dev/ttyUSB0",
-        baud_rate: 1_000_000
-      }
+      controllers do
+        controller :dynamixel, {BB.Servo.Robotis.Controller,
+          port: "/dev/ttyUSB0",
+          baud_rate: 1_000_000
+        }
+      end
 
       joint :shoulder, type: :revolute do
         limit lower: ~u(-90 degree), upper: ~u(90 degree), velocity: ~u(60 degree_per_second)

@@ -24,12 +24,14 @@ defmodule BB.Servo.Robotis.Controller do
 
   The controller is typically defined in the robot DSL:
 
-      controller :dynamixel, {BB.Servo.Robotis.Controller,
-        port: "/dev/ttyUSB0",
-        baud_rate: 1_000_000,
-        control_table: Robotis.ControlTable.XM430,
-        loop_interval_ms: 10
-      }
+      controllers do
+        controller :dynamixel, {BB.Servo.Robotis.Controller,
+          port: "/dev/ttyUSB0",
+          baud_rate: 1_000_000,
+          control_table: Robotis.ControlTable.XM430,
+          loop_interval_ms: 10
+        }
+      end
 
   ## Options
 
@@ -46,8 +48,7 @@ defmodule BB.Servo.Robotis.Controller do
 
   Each registered servo has a row in the ETS table:
 
-      {servo_id, joint_name, center_angle, reverse?, position_deadband,
-       last_position_raw, present_position,
+      {servo_id, actuator_path, position_deadband, last_position_raw, present_position,
        present_temperature, present_voltage, present_current, hardware_error,
        goal_position}
 
