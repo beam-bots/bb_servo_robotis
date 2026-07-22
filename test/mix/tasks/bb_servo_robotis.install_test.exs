@@ -123,10 +123,14 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
   end
 
   describe "notice" do
-    test "prints a topology snippet for the user to paste" do
-      project_with_robot()
-      |> Igniter.compose_task("bb_servo_robotis.install")
-      |> assert_has_notice(&String.contains?(&1, "BB.Servo.Robotis.Actuator"))
+    test "prints an actuator-only topology snippet for the user to paste" do
+      igniter =
+        project_with_robot()
+        |> Igniter.compose_task("bb_servo_robotis.install")
+
+      assert_has_notice(igniter, &String.contains?(&1, "BB.Servo.Robotis.Actuator"))
+
+      refute Enum.any?(igniter.notices, &String.contains?(&1, "BB.Servo.Robotis.Sensor"))
     end
   end
 

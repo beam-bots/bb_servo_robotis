@@ -11,8 +11,8 @@ if Code.ensure_loaded?(Igniter) do
     Adds a `BB.Servo.Robotis.Controller` and a `BB.Servo.Robotis.Bridge` to your
     robot module and imports the package's formatter rules.
 
-    Actuator and sensor entries belong on individual joints in your topology and
-    are not added automatically — a snippet is printed for you to copy.
+    Actuator entries belong on individual joints in your topology and are not
+    added automatically — a snippet is printed for you to copy.
 
     ## Example
 
@@ -100,16 +100,12 @@ if Code.ensure_loaded?(Igniter) do
 
     defp topology_snippet(controller_name) do
       """
-      bb_servo_robotis: add servo actuators/sensors to your joints. Example:
+      bb_servo_robotis: add servo actuators to your joints. Example:
 
           joint :shoulder, type: :revolute do
             limit lower: ~u(-90 degree), upper: ~u(90 degree), velocity: ~u(60 degree_per_second)
 
             actuator :servo, {BB.Servo.Robotis.Actuator,
-              servo_id: 1,
-              controller: :#{controller_name}}
-
-            sensor :position, {BB.Servo.Robotis.Sensor,
               servo_id: 1,
               controller: :#{controller_name}}
           end

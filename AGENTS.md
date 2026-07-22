@@ -110,11 +110,13 @@ BB.Actuator.set_position!(MyRobot, :servo, 0.5)
 defmodule MyRobot do
   use BB
 
-  controller :dynamixel, {BB.Servo.Robotis.Controller,
-    port: "/dev/ttyUSB0",
-    baud_rate: 1_000_000,
-    control_table: Robotis.ControlTable.XM430
-  }
+  controllers do
+    controller :dynamixel, {BB.Servo.Robotis.Controller,
+      port: "/dev/ttyUSB0",
+      baud_rate: 1_000_000,
+      control_table: Robotis.ControlTable.XM430
+    }
+  end
 
   parameters do
     bridge :robotis, {BB.Servo.Robotis.Bridge, controller: :dynamixel}
