@@ -59,11 +59,13 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
 
 - **Actuator** (`lib/bb/servo/robotis/actuator.ex`) - GenServer that receives position commands
   (radians), converts to servo position (0-4095), writes `goal_position` to the controller's
-  ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Handles commands via
-  three delivery methods:
-  - `handle_info/2` for pubsub delivery (`BB.Actuator.set_position/4`)
-  - `handle_cast/2` for direct delivery (`BB.Actuator.set_position!/4`)
-  - `handle_call/3` for synchronous delivery (`BB.Actuator.set_position_sync/5`)
+  ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Accepts commands sent via:
+  - `BB.Actuator.set_position/4` (pubsub)
+  - `BB.Actuator.set_position!/4` (direct)
+  - `BB.Actuator.set_position_sync/5` (synchronous)
+
+  All three arrive at `handle_command/2`; `BB.Actuator.Server` checks arm state and applies
+  the joint's transmission before the driver sees them.
 
 - **Bridge** (`lib/bb/servo/robotis/bridge.ex`) - Parameter bridge exposing servo control table
   parameters through the BB parameter system. Parameters are identified as `"servo_id:param_name"`.
