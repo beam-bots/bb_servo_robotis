@@ -96,8 +96,13 @@ The library uses BB's:
 Send commands using the `BB.Actuator` module:
 
 ```elixir
-# Pubsub delivery (for orchestration/logging)
-BB.Actuator.set_position(MyRobot, [:joint, :servo], 0.5)
+# Arm first — a disarmed robot refuses commands before they reach the driver
+{:ok, cmd} = MyRobot.arm()
+{:ok, :armed, _} = BB.Command.await(cmd)
+
+# Pubsub delivery (for orchestration/logging). Takes a name or a full path.
+BB.Actuator.set_position(MyRobot, :servo, 0.5)
+BB.Actuator.set_position(MyRobot, [:base, :shoulder, :servo], 0.5)
 
 # Direct delivery (fire-and-forget, lower latency)
 BB.Actuator.set_position!(MyRobot, :servo, 0.5)
@@ -126,13 +131,19 @@ defmodule MyRobot do
 
   topology do
     link :base do
-      joint :shoulder, type: :revolute do
-        limit lower: ~u(-90 degree), upper: ~u(90 degree), velocity: ~u(60 degree_per_second)
+      joint :shoulder do
+        type :revolute
+
+        limit lower: ~u(-90 degree), upper: ~u(90 degree),
+              velocity: ~u(60 degree_per_second), effort: ~u(1 newton_meter)
 
         actuator :servo, {BB.Servo.Robotis.Actuator,
           servo_id: 1,
           controller: :dynamixel
         }
+
+        link :upper_arm do
+        end
       end
     end
   end

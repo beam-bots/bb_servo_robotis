@@ -82,7 +82,7 @@ defmodule BB.Servo.Robotis.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bb, bb_dep("~> 0.23")},
+      {:bb, bb_dep("~> 0.24")},
       {:robotis, "~> 0.2"},
 
       # dev/test
