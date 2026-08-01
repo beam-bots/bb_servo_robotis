@@ -21,7 +21,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       [position: position * 1.0]
       |> maybe_add_opt(:command_id, opts[:command_id])
 
-    {:command, Message.new!(Command.Position, @joint_name, message_opts)}
+    Message.new!(Command.Position, @joint_name, message_opts)
   end
 
   defp maybe_add_opt(opts, _key, nil), do: opts
@@ -51,7 +51,6 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     end)
 
     stub(BB, :subscribe, fn _robot, _path -> :ok end)
-    stub(BB.Safety, :armed?, fn _robot -> true end)
     stub(BB.Actuator, :publish_begin_motion, fn _robot, _path, _opts -> :ok end)
   end
 
@@ -209,7 +208,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     end
 
     test "clamps position below lower limit", %{state: state, servo_table: servo_table} do
-      Actuator.handle_cast(position_command(-5.0), state)
+      Actuator.handle_command(position_command(-5.0), state)
 
       [{1, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # -1.0 rad from motor zero (servo centre 2048)
@@ -218,7 +217,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
     end
 
     test "clamps position above upper limit", %{state: state, servo_table: servo_table} do
-      Actuator.handle_cast(position_command(5.0), state)
+      Actuator.handle_command(position_command(5.0), state)
 
       [{1, _, _, _, _, _, _, _, _, goal_pos}] = :ets.lookup(servo_table, 1)
       # 1.0 rad from motor zero (servo centre 2048)
@@ -262,7 +261,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
         :ok
       end)
 
-      Actuator.handle_cast(position_command(0.5), state)
+      Actuator.handle_command(position_command(0.5), state)
 
       assert_receive {:published, TestRobot, [@joint_name, @actuator_name], opts}
 
@@ -281,7 +280,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       end)
 
       before = System.monotonic_time(:millisecond)
-      Actuator.handle_cast(position_command(1.0), state)
+      Actuator.handle_command(position_command(1.0), state)
 
       assert_receive {:arrival, expected_arrival}
 
