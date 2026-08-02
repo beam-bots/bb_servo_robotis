@@ -9,7 +9,7 @@ defmodule BB.Servo.Robotis.MixProject do
   Beam Bots integration for Robotis/Dynamixel servos.
   """
 
-  @version "0.4.0"
+  @version "0.5.0"
 
   def project do
     [
