@@ -178,6 +178,12 @@ defmodule BB.Servo.Robotis.Actuator do
 
   # --- Command handling ---
 
+  # This driver implements position commands. Declaring that here means anything
+  # else is refused by the framework with a structured error, rather than
+  # reaching the catch-all below and being silently dropped.
+  @impl BB.Actuator
+  def command_payloads(_opts), do: [Command.Position]
+
   @impl BB.Actuator
   def handle_command(%Message{payload: %Command.Position{} = cmd}, state) do
     do_set_position(cmd.position, cmd.command_id, state)

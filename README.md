@@ -55,7 +55,7 @@ end
 
 - U2D2 USB adapter or compatible serial interface
 - Dynamixel servos using Protocol 2.0
-- BB framework (`~> 0.24`)
+- BB framework (`~> 0.25`)
 
 ## Usage
 
