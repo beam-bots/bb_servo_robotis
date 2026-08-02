@@ -19,13 +19,11 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install")
       |> assert_has_patch("lib/test/robot.ex", """
-      + |    controller(
-      + |      :dynamixel,
-      + |      {BB.Servo.Robotis.Controller,
-      + |       port: param([:config, :robotis, :device]),
-      + |       baud_rate: param([:config, :robotis, :baud_rate]),
-      + |       control_table: Robotis.ControlTable.XM430}
-      + |    )
+      + |    controller :dynamixel,
+      + |               {BB.Servo.Robotis.Controller,
+      + |                port: param([:config, :robotis, :device]),
+      + |                baud_rate: param([:config, :robotis, :baud_rate]),
+      + |                control_table: Robotis.ControlTable.XM430}
       """)
     end
 
@@ -33,8 +31,7 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install", ["--name", "u2d2"])
       |> assert_has_patch("lib/test/robot.ex", """
-      + |    controller(
-      + |      :u2d2,
+      + |    controller :u2d2,
       """)
     end
   end
@@ -44,7 +41,7 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install")
       |> assert_has_patch("lib/test/robot.ex", """
-      + |    bridge(:robotis_bridge, {BB.Servo.Robotis.Bridge, controller: :dynamixel})
+      + |    bridge :robotis_bridge, {BB.Servo.Robotis.Bridge, controller: :dynamixel}
       """)
     end
 
@@ -57,7 +54,7 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
         "u2d2_bridge"
       ])
       |> assert_has_patch("lib/test/robot.ex", """
-      + |    bridge(:u2d2_bridge, {BB.Servo.Robotis.Bridge, controller: :u2d2})
+      + |    bridge :u2d2_bridge, {BB.Servo.Robotis.Bridge, controller: :u2d2}
       """)
     end
   end
@@ -69,7 +66,7 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
       |> assert_has_patch("lib/test/robot.ex", """
       + |    group :config do
       + |      group :robotis do
-      + |        param(:device, type: :string, doc: "Serial device connected to the Robotis controller")
+      + |        param :device, type: :string, doc: "Serial device connected to the Robotis controller"
       """)
     end
 
@@ -77,11 +74,10 @@ defmodule Mix.Tasks.BbServoRobotis.InstallTest do
       project_with_robot()
       |> Igniter.compose_task("bb_servo_robotis.install")
       |> assert_has_patch("lib/test/robot.ex", """
-      + |        param(:baud_rate,
+      + |        param :baud_rate,
       + |          type: :integer,
       + |          default: 1_000_000,
       + |          doc: "Communications speed for the serial port"
-      + |        )
       """)
     end
   end
