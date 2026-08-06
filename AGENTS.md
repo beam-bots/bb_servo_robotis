@@ -57,6 +57,12 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
   `JointState` messages. Status polling runs on a counter within the same loop. Implements the
   `BB.Controller` behaviour, including its `disarm/1` safety callback.
 
+  Every write to `torque_enable` goes through the controller, so it caches each servo's torque
+  state in the ETS row. That lets an actuator tell whether its goal will be acted on without a
+  bus round trip. `{:resume_servo, id, goal}` is the ordered way back under power: the goal is
+  written and acknowledged *before* torque comes on, so a servo that has drifted while passive
+  doesn't lunge for the goal it was chasing when torque was cut.
+
 - **Actuator** (`lib/bb/servo/robotis/actuator.ex`) - GenServer that receives position commands
   (radians), converts to servo position (0-4095), writes `goal_position` to the controller's
   ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Accepts commands sent via:
@@ -66,6 +72,25 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
 
   All three arrive at `handle_command/2`; `BB.Actuator.Server` checks arm state and applies
   the joint's transmission before the driver sees them.
+
+  It also handles `Command.Stop` (cut torque, joint goes passive) and `Command.Hold` (re-apply
+  torque where the joint is now resting; a no-op if it never went passive). Any command to a
+  joint left passive by a `Stop` resumes on the way past, so callers needn't pair the two.
+
+  `:mode` fixes the servo's operating mode at startup and decides what
+  `command_payloads/1` declares — position, velocity, current, or current-based position.
+  Anything outside the mode's list is refused by the framework with
+  `BB.Error.State.UnsupportedCommand`. The mode is validated against the servo's reported
+  `model_number` (see **Model** below) and written once while torque is already off, because
+  changing it resets PID gains, profile velocity/acceleration and goal current — so it is never
+  changed at runtime.
+
+- **Model** (`lib/bb/servo/robotis/model.ex`) - What each Dynamixel can do, keyed on the
+  `model_number` it reports: supported operating modes, and the torque constant (Nm/A) published
+  in its specification table, used to turn `Command.Effort` into a current. Neither is readable
+  from the bus or derivable from the control table, and one bus can mix models — an XM430 and an
+  XL430 answer to the same control table but only one does current control. Unknown models are
+  drivable in position mode and refused for anything else.
 
 - **Bridge** (`lib/bb/servo/robotis/bridge.ex`) - Parameter bridge exposing servo control table
   parameters through the BB parameter system. Parameters are identified as `"servo_id:param_name"`.
@@ -109,7 +134,20 @@ BB.Actuator.set_position!(MyRobot, :servo, 0.5)
 
 # Synchronous delivery (with acknowledgement)
 {:ok, :accepted} = BB.Actuator.set_position_sync(MyRobot, :servo, 0.5)
+
+# Go passive — the joint can be backdriven by hand, and will sag under load
+BB.Actuator.stop(MyRobot, :servo)
+
+# Back under power, holding wherever it came to rest
+BB.Actuator.hold(MyRobot, :servo)
+
+# Only in an actuator configured `mode: :velocity` / `:current`
+BB.Actuator.set_velocity(MyRobot, :wheel, 2.0, duration: 500)
+BB.Actuator.set_effort(MyRobot, :gripper, 0.4)
 ```
+
+`stop/3` is not the safety path: it leaves the robot armed and commandable. Making the
+hardware safe is `MyRobot.disarm()`, which is robot-wide.
 
 ### Integration Pattern
 
