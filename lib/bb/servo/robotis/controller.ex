@@ -50,10 +50,24 @@ defmodule BB.Servo.Robotis.Controller do
 
       {servo_id, actuator_path, position_deadband, last_position_raw, present_position,
        present_temperature, present_voltage, present_current, hardware_error,
-       goal_position}
+       pending_write, torque_enabled}
 
-  Actuators write `goal_position` (raw units) via `:ets.update_element/3`.
-  The controller reads and clears them each tick.
+  Actuators write `pending_write` — a `{param, raw_value}` pair, naming whichever
+  goal register their operating mode acts on — via `:ets.update_element/3`. The
+  controller writes and clears them each tick.
+
+  ## Torque state
+
+  `torque_enabled` caches what this controller last told each servo, so an
+  actuator can tell whether its goal will actually be acted on without spending a
+  bus round trip per command. Every write to `torque_enable` passes through this
+  controller — the actuators, the parameter bridge and arming all go through
+  `handle_call/3` or `enable_all_torque/1` — which is what makes the cache
+  trustworthy.
+
+  It is only meaningful while the robot is armed. Disarming turns torque off
+  without updating the cache, because commands can't reach an actuator in that
+  state anyway, and arming re-establishes it for every registered servo.
 
   ## Safety
 
@@ -115,7 +129,8 @@ defmodule BB.Servo.Robotis.Controller do
   @idx_present_voltage 7
   @idx_present_current 8
   @idx_hardware_error 9
-  @idx_goal_position 10
+  @idx_pending_write 10
+  @idx_torque_enabled 11
 
   # Diagnostic thresholds
   @temp_warning_threshold 55.0
@@ -234,7 +249,9 @@ defmodule BB.Servo.Robotis.Controller do
       _present_voltage = nil,
       _present_current = nil,
       _hardware_error = nil,
-      _goal_position = nil
+      _pending_write = nil,
+      # The actuator disables torque before it registers.
+      _torque_enabled = false
     })
 
     servo_ids = [servo_id | state.servo_ids] |> Enum.sort() |> Enum.uniq()
@@ -262,8 +279,20 @@ defmodule BB.Servo.Robotis.Controller do
     {:reply, result, state}
   end
 
+  def handle_call({:write, servo_id, :torque_enable, value}, _from, state) do
+    result = Robotis.write(state.robotis, servo_id, :torque_enable, value, true)
+    cache_torque_state(state, servo_id, value, result)
+    {:reply, result, state}
+  end
+
   def handle_call({:write, servo_id, param, value}, _from, state) do
     result = Robotis.write(state.robotis, servo_id, param, value, true)
+    {:reply, result, state}
+  end
+
+  def handle_call({:write_raw, servo_id, :torque_enable, value}, _from, state) do
+    result = Robotis.write_raw(state.robotis, servo_id, :torque_enable, value, true)
+    cache_torque_state(state, servo_id, value != 0, result)
     {:reply, result, state}
   end
 
@@ -293,6 +322,15 @@ defmodule BB.Servo.Robotis.Controller do
 
   def handle_call(:get_control_table, _from, state) do
     {:reply, {:ok, state.control_table}, state}
+  end
+
+  # Bring a passive servo back under power without it snapping to the goal it was
+  # chasing when torque was cut. The goal registers are RAM and survive torque
+  # being off, so the new goal has to land — acknowledged — before torque comes
+  # back on; otherwise the servo lunges for a stale target from wherever it has
+  # come to rest. `:present_position` means hold station at wherever that is.
+  def handle_call({:resume_servo, servo_id, pending_write}, _from, state) do
+    {:reply, resume_servo(state, servo_id, pending_write), state}
   end
 
   # --- Handle info ---
@@ -331,17 +369,17 @@ defmodule BB.Servo.Robotis.Controller do
     entries = :ets.tab2list(state.servo_table)
 
     commands =
-      for {id, _, _, _, _, _, _, _, _, goal_pos} <- entries,
-          goal_pos != nil,
-          do: {id, goal_pos}
+      for {id, _, _, _, _, _, _, _, _, pending_write, _} <- entries,
+          pending_write != nil,
+          do: {id, pending_write}
 
     if commands != [] do
-      Enum.each(commands, fn {id, goal_pos} ->
-        Robotis.write_raw(state.robotis, id, :goal_position, goal_pos, false)
+      Enum.each(commands, fn {id, {param, value}} ->
+        Robotis.write_raw(state.robotis, id, param, value, false)
       end)
 
       for {id, _} <- commands do
-        :ets.update_element(state.servo_table, id, [{@idx_goal_position, nil}])
+        :ets.update_element(state.servo_table, id, [{@idx_pending_write, nil}])
       end
     end
 
@@ -391,7 +429,7 @@ defmodule BB.Servo.Robotis.Controller do
   defp maybe_publish_position(state, servo_id, position_degrees) do
     case :ets.lookup(state.servo_table, servo_id) do
       [
-        {^servo_id, actuator_path, position_deadband, last_position_raw, _, _, _, _, _, _}
+        {^servo_id, actuator_path, position_deadband, last_position_raw, _, _, _, _, _, _, _}
       ] ->
         if should_publish_position?(position_degrees, last_position_raw, position_deadband) do
           # Robotis returns position in degrees (0-360); centre at 180° corresponds
@@ -447,6 +485,39 @@ defmodule BB.Servo.Robotis.Controller do
     actuator_path |> Enum.reverse() |> Enum.at(1)
   end
 
+  # --- Torque ---
+
+  defp resume_servo(state, servo_id, :present_position) do
+    case Robotis.read_raw(state.robotis, servo_id, :present_position) do
+      {:ok, present_position} ->
+        resume_servo(state, servo_id, {:goal_position, present_position})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp resume_servo(state, servo_id, {param, value}) do
+    with :ok <- Robotis.write_raw(state.robotis, servo_id, param, value, true),
+         :ok <- Robotis.write(state.robotis, servo_id, :torque_enable, true, true) do
+      # The goal has been written directly, so anything the actuator left pending
+      # for the next tick is already spent.
+      :ets.update_element(state.servo_table, servo_id, [
+        {@idx_pending_write, nil},
+        {@idx_torque_enabled, true}
+      ])
+
+      :ok
+    end
+  end
+
+  defp cache_torque_state(_state, _servo_id, _enabled?, {:error, _reason}), do: false
+
+  # An actuator disables torque before it registers, so the row may not exist yet
+  # — `update_element/3` reports that with `false` rather than raising.
+  defp cache_torque_state(state, servo_id, enabled?, :ok),
+    do: :ets.update_element(state.servo_table, servo_id, [{@idx_torque_enabled, enabled?}])
+
   # --- Arming ---
 
   defp enable_all_torque(%{servo_ids: []}), do: :ok
@@ -472,7 +543,13 @@ defmodule BB.Servo.Robotis.Controller do
     end)
 
     values = Enum.map(servo_ids, fn id -> {id, true} end)
-    Robotis.sync_write(state.robotis, :torque_enable, values)
+    result = Robotis.sync_write(state.robotis, :torque_enable, values)
+
+    Enum.each(servo_ids, fn id ->
+      :ets.update_element(state.servo_table, id, [{@idx_torque_enabled, true}])
+    end)
+
+    result
   end
 
   # --- Status polling ---
@@ -580,8 +657,11 @@ defmodule BB.Servo.Robotis.Controller do
 
   defp get_joint_name(state, servo_id) do
     case :ets.lookup(state.servo_table, servo_id) do
-      [{^servo_id, actuator_path, _, _, _, _, _, _, _, _}] -> joint_name_from_path(actuator_path)
-      [] -> String.to_atom("servo_#{servo_id}")
+      [{^servo_id, actuator_path, _, _, _, _, _, _, _, _, _}] ->
+        joint_name_from_path(actuator_path)
+
+      [] ->
+        String.to_atom("servo_#{servo_id}")
     end
   end
 

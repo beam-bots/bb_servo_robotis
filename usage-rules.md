@@ -86,7 +86,9 @@ servo range or speed on the actuator itself.
 
 **Actuator** (`BB.Servo.Robotis.Actuator`): `:servo_id` (1–253, required),
 `:controller` (the controller's DSL name, required), `:position_deadband`
-(default `2`, raw units — filters feedback noise).
+(default `2`, raw units — filters feedback noise), `:mode` (default `:position`;
+also `:velocity`, `:current`, `:current_position`), `:expiry_action` (default
+`:stop`; `:hold` to stay under power when a command's `duration` runs out).
 
 **Bridge** (`BB.Servo.Robotis.Bridge`): `:controller` (required). Parameters are
 addressed as `"servo_id:param_name"`, e.g.
@@ -104,6 +106,25 @@ ignores motion commands:
 BB.Actuator.set_position(MyRobot.Robot, :servo, 0.5)
 ```
 
+What the actuator accepts depends on its `:mode` — `Position`/`Hold`/`Stop` in
+`:position`, `Velocity`/`Hold`/`Stop` in `:velocity`, `Effort`/`Stop` in `:current`,
+and all of them bar `Velocity` in `:current_position`. Anything else is refused with
+`BB.Error.State.UnsupportedCommand`. Trajectory isn't implemented in any mode.
+
+The mode is fixed at startup because changing it resets the servo's PID gains,
+profile velocity and goal current. It's also checked against the model the servo
+reports, so `mode: :current` on an XL430 — which has no current control — fails to
+start rather than silently doing nothing.
+
+`Stop` cuts torque, so the joint goes passive and can be backdriven — under load it
+will sag. `Hold` puts it back under power at wherever it has come to rest, and a
+`Position` command resumes on the way past, so you don't have to pair them:
+
+```elixir
+BB.Actuator.stop(MyRobot.Robot, :servo)
+BB.Actuator.set_position(MyRobot.Robot, :servo, 0.5)  # re-applies torque itself
+```
+
 ## Anti-patterns
 
 - **Don't add a `sensor` for position feedback.** The controller publishes
@@ -112,8 +133,19 @@ BB.Actuator.set_position(MyRobot.Robot, :servo, 0.5)
 - **Don't assume it runs under simulation.** Both the controller and the bridge
   default to `simulation: :omit`, so neither starts in simulation. Set
   `simulation: :mock` (or `:start`) if you need them there.
-- **Don't manage torque per-actuator.** Torque is centralised on the controller
-  via `:disarm_action`; the actuator's `disarm/1` is a no-op by design.
+- **Don't use the bridge to re-enable torque.** Writing `"1:torque_enable"` back to
+  `true` doesn't set a goal first, so the servo lunges for whatever goal it was
+  chasing when torque was cut — from wherever it has drifted to since. `Hold` and
+  `Position` write the goal and wait for it to land before torque comes on.
+- **Don't use the bridge to change `operating_mode`.** The driver sets it at startup
+  and assumes it stays put; changing it underneath also wipes the PID gains, profile
+  velocity and goal current. Set `:mode` on the actuator instead.
+- **Don't set the joint's velocity limit and expect the servo to ignore it.** The
+  driver writes it to `profile_velocity`, so position moves now travel at that speed
+  rather than flat out.
+- **Don't reach for `Stop` to make the hardware safe.** It leaves the robot armed and
+  commandable, and a passive joint under load falls rather than stopping. Disarm for
+  that; the actuator's own `disarm/1` is a no-op because the controller owns the bus.
 - **Don't share a `servo_id` or a serial `port`.** One controller per U2D2
   adapter, and each servo on the bus needs a distinct ID.
 

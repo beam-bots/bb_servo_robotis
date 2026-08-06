@@ -26,6 +26,20 @@ defmodule BB.Servo.Robotis.ControllerTest do
     state
   end
 
+  defp pending_write(state, servo_id) do
+    [{^servo_id, _, _, _, _, _, _, _, _, pending_write, _}] =
+      :ets.lookup(state.servo_table, servo_id)
+
+    pending_write
+  end
+
+  defp torque_enabled(state, servo_id) do
+    [{^servo_id, _, _, _, _, _, _, _, _, _, torque_enabled}] =
+      :ets.lookup(state.servo_table, servo_id)
+
+    torque_enabled
+  end
+
   describe "init/1" do
     test "succeeds with valid options" do
       stub_robotis_success()
@@ -197,13 +211,14 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert is_reference(table)
       assert state.servo_ids == [1]
 
-      [{1, actuator_path, deadband, last_pos, _, _, _, _, _, goal}] =
+      [{1, actuator_path, deadband, last_pos, _, _, _, _, _, goal, torque_enabled}] =
         :ets.lookup(table, 1)
 
       assert actuator_path == [:joint1, :servo]
       assert deadband == 2
       assert last_pos == nil
       assert goal == nil
+      assert torque_enabled == false
     end
 
     test "list_servos returns registered servo IDs", %{state: state} do
@@ -219,6 +234,156 @@ defmodule BB.Servo.Robotis.ControllerTest do
                Controller.handle_call(:list_servos, self(), state)
 
       assert servo_ids == [1, 2]
+    end
+  end
+
+  describe "resume_servo" do
+    setup do
+      robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+      stub(Robotis, :start_link, fn _opts -> {:ok, robotis_pid} end)
+      stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+      stub(BB, :subscribe, fn _robot, _path -> :ok end)
+
+      {:reply, {:ok, _table}, state} =
+        Controller.handle_call(
+          {:register_servo, 1, [:joint1, :servo], 2},
+          self(),
+          init_controller()
+        )
+
+      {:ok, state: state, robotis_pid: robotis_pid}
+    end
+
+    test "lands the goal before torque comes back on", %{state: state} do
+      test_pid = self()
+
+      stub(Robotis, :write_raw, fn _pid, 1, :goal_position, 2700, true ->
+        send(test_pid, {:bus, :goal})
+        :ok
+      end)
+
+      stub(Robotis, :write, fn _pid, 1, :torque_enable, true, true ->
+        send(test_pid, {:bus, :torque})
+        :ok
+      end)
+
+      assert {:reply, :ok, _state} =
+               Controller.handle_call({:resume_servo, 1, {:goal_position, 2700}}, self(), state)
+
+      # Unbound matches take the oldest message, so this asserts the order: the
+      # goal must be acknowledged first, or the servo lunges for a stale one.
+      assert_receive {:bus, first}
+      assert_receive {:bus, second}
+      assert [first, second] == [:goal, :torque]
+    end
+
+    test "records torque on and spends the pending goal", %{state: state} do
+      :ets.update_element(state.servo_table, 1, [{10, {:goal_position, 1396}}])
+
+      stub(Robotis, :write_raw, fn _pid, 1, :goal_position, 2700, true -> :ok end)
+      stub(Robotis, :write, fn _pid, 1, :torque_enable, true, true -> :ok end)
+
+      {:reply, :ok, _state} =
+        Controller.handle_call({:resume_servo, 1, {:goal_position, 2700}}, self(), state)
+
+      assert pending_write(state, 1) == nil
+      assert torque_enabled(state, 1) == true
+    end
+
+    test "holds station at the present position when asked for one", %{state: state} do
+      test_pid = self()
+
+      stub(Robotis, :read_raw, fn _pid, 1, :present_position -> {:ok, 1800} end)
+
+      stub(Robotis, :write_raw, fn _pid, 1, :goal_position, goal, true ->
+        send(test_pid, {:goal, goal})
+        :ok
+      end)
+
+      stub(Robotis, :write, fn _pid, 1, :torque_enable, true, true -> :ok end)
+
+      assert {:reply, :ok, _state} =
+               Controller.handle_call({:resume_servo, 1, :present_position}, self(), state)
+
+      assert_receive {:goal, 1800}
+    end
+
+    test "leaves torque off when the goal write is refused", %{state: state} do
+      stub(Robotis, :write_raw, fn _pid, 1, :goal_position, _goal, true -> {:error, :timeout} end)
+
+      assert {:reply, {:error, :timeout}, _state} =
+               Controller.handle_call({:resume_servo, 1, {:goal_position, 2700}}, self(), state)
+
+      assert torque_enabled(state, 1) == false
+    end
+
+    test "reports a failed present-position read", %{state: state} do
+      stub(Robotis, :read_raw, fn _pid, 1, :present_position -> {:error, :timeout} end)
+      reject(&Robotis.write_raw/5)
+
+      assert {:reply, {:error, :timeout}, _state} =
+               Controller.handle_call({:resume_servo, 1, :present_position}, self(), state)
+    end
+  end
+
+  describe "torque state cache" do
+    setup do
+      robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+      stub(Robotis, :start_link, fn _opts -> {:ok, robotis_pid} end)
+      stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+      stub(BB, :subscribe, fn _robot, _path -> :ok end)
+
+      {:reply, {:ok, _table}, state} =
+        Controller.handle_call(
+          {:register_servo, 1, [:joint1, :servo], 2},
+          self(),
+          init_controller()
+        )
+
+      {:ok, state: state}
+    end
+
+    test "follows torque written through the controller", %{state: state} do
+      stub(Robotis, :write, fn _pid, 1, :torque_enable, _value, true -> :ok end)
+
+      Controller.handle_call({:write, 1, :torque_enable, true}, self(), state)
+      assert torque_enabled(state, 1) == true
+
+      Controller.handle_call({:write, 1, :torque_enable, false}, self(), state)
+      assert torque_enabled(state, 1) == false
+    end
+
+    test "follows raw torque writes", %{state: state} do
+      stub(Robotis, :write_raw, fn _pid, 1, :torque_enable, _value, true -> :ok end)
+
+      Controller.handle_call({:write_raw, 1, :torque_enable, 1}, self(), state)
+      assert torque_enabled(state, 1) == true
+
+      Controller.handle_call({:write_raw, 1, :torque_enable, 0}, self(), state)
+      assert torque_enabled(state, 1) == false
+    end
+
+    test "is left alone when the write is refused", %{state: state} do
+      stub(Robotis, :write, fn _pid, 1, :torque_enable, _value, true -> {:error, :timeout} end)
+
+      assert {:reply, {:error, :timeout}, _state} =
+               Controller.handle_call({:write, 1, :torque_enable, true}, self(), state)
+
+      assert torque_enabled(state, 1) == false
+    end
+
+    test "records torque on for every servo when the robot arms", %{state: state} do
+      stub(Robotis, :fast_sync_read, fn _pid, [1], :present_position -> [{1, {:ok, 180.0}}] end)
+      stub(Robotis, :read_raw, fn _pid, 1, :present_position -> {:ok, 2048} end)
+      stub(Robotis, :write_raw, fn _pid, 1, :goal_position, 2048, false -> :ok end)
+      stub(Robotis, :sync_write, fn _pid, :torque_enable, [{1, true}] -> :ok end)
+
+      armed = %BB.Message{payload: %BB.StateMachine.Transition{from: :disarmed, to: :armed}}
+
+      assert {:noreply, _state} =
+               Controller.handle_info({:bb, [:state_machine], armed}, state)
+
+      assert torque_enabled(state, 1) == true
     end
   end
 
@@ -239,7 +404,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
     end
 
     test "processes pending commands from ETS", %{state: state, robotis_pid: robotis_pid} do
-      :ets.update_element(state.servo_table, 1, [{10, 2048}])
+      :ets.update_element(state.servo_table, 1, [{10, {:goal_position, 2048}}])
 
       expect(Robotis, :write_raw, fn ^robotis_pid, 1, :goal_position, 2048, false -> :ok end)
       stub(Robotis, :fast_sync_read, fn _pid, _ids, _param -> [{1, {:ok, 180.0}}] end)
@@ -247,7 +412,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       assert {:noreply, _state} = Controller.handle_info(:tick, state)
 
-      [{1, _, _, _, _, _, _, _, _, goal}] = :ets.lookup(state.servo_table, 1)
+      [{1, _, _, _, _, _, _, _, _, goal, _}] = :ets.lookup(state.servo_table, 1)
       assert goal == nil
     end
 
@@ -282,7 +447,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
 
       Controller.handle_info(:tick, state)
 
-      [{1, _, _, _, present_pos, _, _, _, _, _}] = :ets.lookup(state.servo_table, 1)
+      [{1, _, _, _, present_pos, _, _, _, _, _, _}] = :ets.lookup(state.servo_table, 1)
       assert present_pos == 195.0
     end
   end
