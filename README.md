@@ -46,7 +46,7 @@ Add `bb_servo_robotis` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:bb_servo_robotis, "~> 0.5.1"}
+    {:bb_servo_robotis, "~> 0.6.0"}
   ]
 end
 ```
