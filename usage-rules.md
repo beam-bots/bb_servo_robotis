@@ -79,7 +79,7 @@ servo range or speed on the actuator itself.
 |---|---|---|
 | `:port` | required | Serial port path, e.g. `"/dev/ttyUSB0"` |
 | `:baud_rate` | `1_000_000` | Bus baud rate |
-| `:control_table` | `Robotis.ControlTable.XM430` | Must match the servo family (XM430 / XL330 / XL320) |
+| `:control_table` | `Robotis.ControlTable.XM430` | Must match the servo family (XM430 / XL330). The XL320 is rejected — it is a different servo generation this driver can't drive |
 | `:loop_interval_ms` | `10` | Control-loop period (≈100 Hz) |
 | `:status_poll_interval_ms` | `1000` | Temp/voltage/current/error poll; `0` disables |
 | `:disarm_action` | `:disable_torque` | `:disable_torque`, or `:hold` to keep position |

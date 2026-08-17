@@ -26,6 +26,10 @@ defmodule BB.Servo.Robotis.ControllerTest do
     state
   end
 
+  defp validate_options(opts) do
+    Spark.Options.validate([port: "/dev/ttyUSB0"] ++ opts, Controller.options_schema())
+  end
+
   defp pending_write(state, servo_id) do
     [{^servo_id, _, _, _, _, _, _, _, _, pending_write, _}] =
       :ets.lookup(state.servo_table, servo_id)
@@ -38,6 +42,22 @@ defmodule BB.Servo.Robotis.ControllerTest do
       :ets.lookup(state.servo_table, servo_id)
 
     torque_enabled
+  end
+
+  describe "options_schema/0" do
+    test "accepts the supported control tables" do
+      for control_table <- [Robotis.ControlTable.XM430, Robotis.ControlTable.XL330] do
+        assert {:ok, opts} = validate_options(control_table: control_table)
+        assert opts[:control_table] == control_table
+      end
+    end
+
+    test "rejects the XL320 control table" do
+      assert {:error, error} = validate_options(control_table: Robotis.ControlTable.XL320)
+
+      assert %Spark.Options.ValidationError{key: :control_table} = error
+      assert Exception.message(error) =~ "XL320 is not supported"
+    end
   end
 
   describe "init/1" do

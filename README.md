@@ -37,7 +37,6 @@ Currently supports the following servo families via the U2D2 USB adapter:
 
 - XM430 (W210, W350)
 - XL330-M288
-- XL320
 
 ## Installation
 
@@ -184,7 +183,7 @@ bus. Define one controller per U2D2 adapter. The controller handles:
 |--------|------|---------|-------------|
 | `port` | string | required | Serial port path (e.g., "/dev/ttyUSB0") |
 | `baud_rate` | integer | 1_000_000 | Baud rate in bps |
-| `control_table` | module | `Robotis.ControlTable.XM430` | Servo control table (anything that implements the `Robotis.ControlTable` behaviour) |
+| `control_table` | module | `Robotis.ControlTable.XM430` | Servo control table (any `Robotis.ControlTable` implementation bar `Robotis.ControlTable.XL320`, which this driver can't drive) |
 | `loop_interval_ms` | integer | 10 | Control loop interval (100 Hz default) |
 | `status_poll_interval_ms` | integer | 1000 | Status polling interval (0 to disable) |
 | `disarm_action` | atom | `:disable_torque` | Action on disarm (`:disable_torque` or `:hold`) |
