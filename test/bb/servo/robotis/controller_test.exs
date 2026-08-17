@@ -58,6 +58,13 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert %Spark.Options.ValidationError{key: :control_table} = error
       assert Exception.message(error) =~ "XL320 is not supported"
     end
+
+    test "rejects anything that doesn't implement the control table behaviour" do
+      for control_table <- [Enum, Robotis.ControlTable.NoSuchTable, "XM430"] do
+        assert {:error, %Spark.Options.ValidationError{key: :control_table}} =
+                 validate_options(control_table: control_table)
+      end
+    end
   end
 
   describe "init/1" do
@@ -103,7 +110,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
         bb: default_bb_context(),
         port: "/dev/ttyUSB0",
         baud_rate: 115_200,
-        control_table: :xl330_m288
+        control_table: Robotis.ControlTable.XL330
       ]
 
       {:ok, _state} = Controller.init(opts)
@@ -111,7 +118,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert_receive {:robotis_opts, robotis_opts}
       assert robotis_opts[:uart_port] == "/dev/ttyUSB0"
       assert robotis_opts[:baud] == 115_200
-      assert robotis_opts[:control_table] == :xl330_m288
+      assert robotis_opts[:control_table] == Robotis.ControlTable.XL330
     end
 
     test "registers with safety system" do
