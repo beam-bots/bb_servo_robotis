@@ -110,7 +110,8 @@ end
 
 The actuator automatically derives its configuration from the joint limits - no
 need to specify servo rotation range or speed separately. Position feedback is
-handled by the controller; no separate sensor is needed.
+handled by the controller, and the actuator declares `:position_feedback` in
+`capabilities/1`, so no separate sensor is needed.
 
 ## Sending Commands
 
@@ -122,48 +123,44 @@ commands to a disarmed robot are refused before they reach the driver:
 {:ok, :armed, _} = BB.Command.await(cmd)
 ```
 
-There are three ways to deliver a command. They differ in transport, not in
-what the driver sees: all three arrive at the actuator's `handle_command/2`,
-and none can skip the framework's arm check or its joint-to-motor transmission.
+Delivery differs in transport, not in what the driver sees: a command arrives
+at the actuator's `handle_command/2` either way, and neither route can skip the
+framework's arm check or its joint-to-motor transmission.
 
 Every function takes either the actuator's unique name or its full path
 through the topology.
 
-### Pubsub Delivery (for orchestration)
+### Default Delivery (published, and waited on)
 
-Commands are published via pubsub, enabling logging, replay, and multi-subscriber
-patterns:
+The command is published for observers — logging, replay, other subscribers —
+and delivered to the driver by a call, so the return value says whether the
+joint is moving:
 
 ```elixir
 # By name
-BB.Actuator.set_position(MyRobot, :shoulder_servo, 0.5)
+:ok = BB.Actuator.set_position(MyRobot, :shoulder_servo, 0.5)
 
 # Or by full path
-BB.Actuator.set_position(MyRobot, [:base, :shoulder, :shoulder_servo], 0.5)
+:ok = BB.Actuator.set_position(MyRobot, [:base, :shoulder, :shoulder_servo], 0.5)
 
 # With options
-BB.Actuator.set_position(MyRobot, :shoulder_servo, 0.5,
-  command_id: make_ref()
-)
+case BB.Actuator.set_position(MyRobot, :shoulder_servo, 0.5,
+       command_id: make_ref(),
+       timeout: 1000
+     ) do
+  :ok -> :ok
+  {:error, reason} -> handle_error(reason)
+end
 ```
 
 ### Direct Delivery (for time-critical control)
 
-Commands bypass pubsub for lower latency:
+The command is cast instead of called, for control paths that can't afford the
+round trip. It always returns `:ok`, so a refusal reaches the log and telemetry
+only — don't write an error branch that can never run:
 
 ```elixir
-BB.Actuator.set_position!(MyRobot, :shoulder_servo, 0.5)
-```
-
-### Synchronous Delivery (with acknowledgement)
-
-Wait for the actuator to acknowledge the command:
-
-```elixir
-case BB.Actuator.set_position_sync(MyRobot, :shoulder_servo, 0.5) do
-  {:ok, :accepted} -> :ok
-  {:error, reason} -> handle_error(reason)
-end
+BB.Actuator.set_position(MyRobot, :shoulder_servo, 0.5, delivery: :direct)
 ```
 
 ## Components

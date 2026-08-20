@@ -65,13 +65,17 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
 
 - **Actuator** (`lib/bb/servo/robotis/actuator.ex`) - GenServer that receives position commands
   (radians), converts to servo position (0-4095), writes `goal_position` to the controller's
-  ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Accepts commands sent via:
-  - `BB.Actuator.set_position/4` (pubsub)
-  - `BB.Actuator.set_position!/4` (direct)
-  - `BB.Actuator.set_position_sync/5` (synchronous)
+  ETS table, and publishes `BB.Message.Actuator.BeginMotion` messages. Accepts commands sent via
+  `BB.Actuator.set_position/4`, which publishes for observers and waits for the driver to accept,
+  or via the same function under `delivery: :direct`, which casts for control paths that can't
+  afford the round trip. Either way they arrive at `handle_command/2`; `BB.Actuator.Server` checks
+  arm state and applies the joint's transmission before the driver sees them.
 
-  All three arrive at `handle_command/2`; `BB.Actuator.Server` checks arm state and applies
-  the joint's transmission before the driver sees them.
+  `capabilities/1` declares `:position_feedback`, because the controller reads `present_position`
+  back off the bus and publishes it as `JointState`. That is what keeps `BB.Robot.State` current
+  for a robotis joint, and what stops `BB.Dsl.Verifiers.ValidatePositionFeedback` warning about a
+  joint with no sensor in its DSL block. Velocity and effort are not declared: the servos report
+  them, but the controller doesn't read them.
 
   It also handles `Command.Stop` (cut torque, joint goes passive) and `Command.Hold` (re-apply
   torque where the joint is now resting; a no-op if it never went passive). Any command to a
@@ -125,15 +129,13 @@ Send commands using the `BB.Actuator` module:
 {:ok, cmd} = MyRobot.arm()
 {:ok, :armed, _} = BB.Command.await(cmd)
 
-# Pubsub delivery (for orchestration/logging). Takes a name or a full path.
-BB.Actuator.set_position(MyRobot, :servo, 0.5)
-BB.Actuator.set_position(MyRobot, [:base, :shoulder, :servo], 0.5)
+# Publishes for observers and waits for the driver. Takes a name or a full path.
+:ok = BB.Actuator.set_position(MyRobot, :servo, 0.5)
+:ok = BB.Actuator.set_position(MyRobot, [:base, :shoulder, :servo], 0.5)
 
-# Direct delivery (fire-and-forget, lower latency)
-BB.Actuator.set_position!(MyRobot, :servo, 0.5)
-
-# Synchronous delivery (with acknowledgement)
-{:ok, :accepted} = BB.Actuator.set_position_sync(MyRobot, :servo, 0.5)
+# Direct delivery (fire-and-forget, lower latency). Always returns `:ok` — a
+# refusal reaches the log and telemetry only.
+BB.Actuator.set_position(MyRobot, :servo, 0.5, delivery: :direct)
 
 # Go passive — the joint can be backdriven by hand, and will sag under load
 BB.Actuator.stop(MyRobot, :servo)
