@@ -231,7 +231,11 @@ Controller tick loop (unified, default 100Hz):
 
 - `Robotis.ControlTable.XM430` - XM430 series (W210, W350)
 - `Robotis.ControlTable.XL330` - XL330-M288
-- `Robotis.ControlTable.XL320` - XL320 (has different parameters)
+
+`Robotis.ControlTable.XL320` is rejected by the controller's `:control_table`
+option. The XL320 is an earlier servo generation whose control table has none of
+the registers this driver drives, and whose 1024-step travel doesn't match the
+12-bit position conversion used throughout.
 
 
 ## Licensing headers

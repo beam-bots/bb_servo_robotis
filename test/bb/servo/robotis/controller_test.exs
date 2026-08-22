@@ -26,6 +26,10 @@ defmodule BB.Servo.Robotis.ControllerTest do
     state
   end
 
+  defp validate_options(opts) do
+    Spark.Options.validate([port: "/dev/ttyUSB0"] ++ opts, Controller.options_schema())
+  end
+
   defp pending_write(state, servo_id) do
     [{^servo_id, _, _, _, _, _, _, _, _, pending_write, _}] =
       :ets.lookup(state.servo_table, servo_id)
@@ -38,6 +42,29 @@ defmodule BB.Servo.Robotis.ControllerTest do
       :ets.lookup(state.servo_table, servo_id)
 
     torque_enabled
+  end
+
+  describe "options_schema/0" do
+    test "accepts the supported control tables" do
+      for control_table <- [Robotis.ControlTable.XM430, Robotis.ControlTable.XL330] do
+        assert {:ok, opts} = validate_options(control_table: control_table)
+        assert opts[:control_table] == control_table
+      end
+    end
+
+    test "rejects the XL320 control table" do
+      assert {:error, error} = validate_options(control_table: Robotis.ControlTable.XL320)
+
+      assert %Spark.Options.ValidationError{key: :control_table} = error
+      assert Exception.message(error) =~ "XL320 is not supported"
+    end
+
+    test "rejects anything that doesn't implement the control table behaviour" do
+      for control_table <- [Enum, Robotis.ControlTable.NoSuchTable, "XM430"] do
+        assert {:error, %Spark.Options.ValidationError{key: :control_table}} =
+                 validate_options(control_table: control_table)
+      end
+    end
   end
 
   describe "init/1" do
@@ -83,7 +110,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
         bb: default_bb_context(),
         port: "/dev/ttyUSB0",
         baud_rate: 115_200,
-        control_table: :xl330_m288
+        control_table: Robotis.ControlTable.XL330
       ]
 
       {:ok, _state} = Controller.init(opts)
@@ -91,7 +118,7 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert_receive {:robotis_opts, robotis_opts}
       assert robotis_opts[:uart_port] == "/dev/ttyUSB0"
       assert robotis_opts[:baud] == 115_200
-      assert robotis_opts[:control_table] == :xl330_m288
+      assert robotis_opts[:control_table] == Robotis.ControlTable.XL330
     end
 
     test "registers with safety system" do

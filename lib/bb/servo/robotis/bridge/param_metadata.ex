@@ -60,14 +60,6 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
     shutdown: "Shutdown error conditions"
   }
 
-  # XL320-specific config params
-  @xl320_config_params %{
-    cw_angle_limit: "Clockwise angle limit",
-    ccw_angle_limit: "Counter-clockwise angle limit",
-    control_mode: "Control mode (wheel/joint)",
-    max_torque: "Maximum torque"
-  }
-
   # Control parameters - RAM, writable at runtime
   @control_params %{
     torque_enable: "Enable/disable torque",
@@ -87,16 +79,6 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
     profile_acceleration: "Profile acceleration",
     profile_velocity: "Profile velocity",
     goal_position: "Goal position"
-  }
-
-  # XL320-specific control params
-  @xl320_control_params %{
-    d_gain: "D gain",
-    i_gain: "I gain",
-    p_gain: "P gain",
-    moving_speed: "Moving speed",
-    torque_limit: "Torque limit",
-    punch: "Minimum current threshold"
   }
 
   # Status parameters - excluded from bridge, exposed via sensor messages
@@ -127,18 +109,15 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
   List all parameter names for a control table, excluding status and indirect params.
   """
   @spec list_params(control_table()) :: [atom()]
-  def list_params(control_table) do
-    all_params =
-      Map.keys(@info_params) ++ config_params(control_table) ++ control_params(control_table)
-
-    Enum.sort(all_params)
+  def list_params(_control_table) do
+    Enum.sort(Map.keys(@info_params) ++ Map.keys(@config_params) ++ Map.keys(@control_params))
   end
 
   @doc """
   Get metadata for a specific parameter.
   """
   @spec param_info(control_table(), atom()) :: {:ok, param_info()} | {:error, :unknown_param}
-  def param_info(control_table, param_name) do
+  def param_info(_control_table, param_name) do
     cond do
       Map.has_key?(@info_params, param_name) ->
         {:ok,
@@ -149,26 +128,22 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
            doc: @info_params[param_name]
          }}
 
-      param_name in config_params(control_table) ->
-        doc = config_doc(control_table, param_name)
-
+      Map.has_key?(@config_params, param_name) ->
         {:ok,
          %{
            category: :config,
            writable: true,
            requires_torque_off: true,
-           doc: doc
+           doc: @config_params[param_name]
          }}
 
-      param_name in control_params(control_table) ->
-        doc = control_doc(control_table, param_name)
-
+      Map.has_key?(@control_params, param_name) ->
         {:ok,
          %{
            category: :control,
            writable: true,
            requires_torque_off: false,
-           doc: doc
+           doc: @control_params[param_name]
          }}
 
       true ->
@@ -206,24 +181,4 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadata do
     param_name in @status_params or
       String.starts_with?(Atom.to_string(param_name), @indirect_prefix)
   end
-
-  # Private helpers
-
-  defp config_params(:xl320), do: Map.keys(@config_params) ++ Map.keys(@xl320_config_params)
-  defp config_params(_), do: Map.keys(@config_params)
-
-  defp control_params(:xl320), do: Map.keys(@control_params) ++ Map.keys(@xl320_control_params)
-  defp control_params(_), do: Map.keys(@control_params)
-
-  defp config_doc(:xl320, param_name) do
-    Map.get(@xl320_config_params, param_name) || Map.get(@config_params, param_name, "")
-  end
-
-  defp config_doc(_, param_name), do: Map.get(@config_params, param_name, "")
-
-  defp control_doc(:xl320, param_name) do
-    Map.get(@xl320_control_params, param_name) || Map.get(@control_params, param_name, "")
-  end
-
-  defp control_doc(_, param_name), do: Map.get(@control_params, param_name, "")
 end

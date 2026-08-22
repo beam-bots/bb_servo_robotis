@@ -40,14 +40,6 @@ defmodule BB.Servo.Robotis.Bridge.ParamMetadataTest do
       refute :indirect_address_1 in params
       refute :indirect_data_1 in params
     end
-
-    test "includes xl320-specific params for xl320" do
-      params = ParamMetadata.list_params(:xl320)
-
-      assert :cw_angle_limit in params
-      assert :ccw_angle_limit in params
-      assert :d_gain in params
-    end
   end
 
   describe "param_info/2" do

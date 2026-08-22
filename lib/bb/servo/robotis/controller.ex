@@ -37,7 +37,10 @@ defmodule BB.Servo.Robotis.Controller do
 
   - `:port` - (required) The serial port path, e.g., `"/dev/ttyUSB0"`
   - `:baud_rate` - Baud rate in bps (default: 1_000_000)
-  - `:control_table` - The servo control table to use (default: `Robotis.ControlTable.XM430`)
+  - `:control_table` - The servo control table to use (default: `Robotis.ControlTable.XM430`).
+    `Robotis.ControlTable.XL320` is rejected: the XL320 is an earlier servo generation
+    whose control table has none of the registers this driver drives, and whose 1024-step
+    travel doesn't match the 12-bit position conversion used throughout.
   - `:loop_interval_ms` - Control loop interval in ms (default: 10, i.e. 100Hz)
   - `:status_poll_interval_ms` - Status polling interval in ms (default: 1000, set to 0 to disable)
   - `:disarm_action` - Action to take when robot is disarmed (default: `:disable_torque`)
@@ -90,7 +93,8 @@ defmodule BB.Servo.Robotis.Controller do
         default: 1_000_000
       ],
       control_table: [
-        type: {:behaviour, Robotis.ControlTable},
+        type: {:custom, __MODULE__, :validate_control_table, []},
+        type_doc: "`t:module/0`",
         doc: "The servo control table to use",
         default: Robotis.ControlTable.XM430
       ],
@@ -137,6 +141,31 @@ defmodule BB.Servo.Robotis.Controller do
   @temp_error_threshold 70.0
   @voltage_low_threshold 10.0
   @voltage_high_threshold 14.0
+
+  @doc false
+  @spec validate_control_table(term()) :: {:ok, module()} | {:error, String.t()}
+  def validate_control_table(Robotis.ControlTable.XL320) do
+    {:error,
+     "the XL320 is not supported. It is an earlier servo generation, and its control " <>
+       "table has none of the registers this driver writes and reads — operating_mode, " <>
+       "profile_velocity, goal_velocity, goal_current, present_current and " <>
+       "present_input_voltage — nor does its 1024-step travel match the 12-bit position " <>
+       "conversion. Use Robotis.ControlTable.XM430 or Robotis.ControlTable.XL330"}
+  end
+
+  # Spark.Options' own `{:behaviour, _}` type only checks the value is an atom, so the
+  # conformance check is done here. It is safe at this point because component options are
+  # validated when the server starts, by which time the control table module is loadable.
+  def validate_control_table(control_table) do
+    if is_atom(control_table) and Code.ensure_loaded?(control_table) and
+         Spark.implements_behaviour?(control_table, Robotis.ControlTable) do
+      {:ok, control_table}
+    else
+      {:error,
+       "expected a module implementing the Robotis.ControlTable behaviour, got: " <>
+         inspect(control_table)}
+    end
+  end
 
   @doc """
   Handle disarm based on the configured `disarm_action`.
