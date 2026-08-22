@@ -11,6 +11,19 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [v0.6.1](https://github.com/beam-bots/bb_servo_pca9685/compare/v0.6.0...v0.6.1) (2026-08-22)
+
+
+
+
+### Improvements:
+
+* declare `:position_feedback` in `capabilities/1` (#106) by James Harton
+
+### Bug Fixes:
+
+* reject the XL320 control table instead of crashing the bus process (#104) by James Harton
+
 ## [v0.6.0](https://github.com/beam-bots/bb_servo_pca9685/compare/v0.5.1...v0.6.0) (2026-08-09)
 ### Breaking Changes:
 
