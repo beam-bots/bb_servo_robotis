@@ -21,6 +21,19 @@ defmodule BB.Servo.Robotis.Actuator do
   4. Writes `profile_velocity` from the joint's velocity limit
   5. Subscribes to the commands its mode admits
 
+  ## Position feedback
+
+  A Dynamixel knows where it is, so this driver declares `:position_feedback`
+  and the joint needs no sensor of its own. The reading is published by
+  `BB.Servo.Robotis.Controller`, which does a `fast_sync_read` of
+  `present_position` across the bus on every tick and emits a
+  `BB.Message.Sensor.JointState` per servo that has moved further than its
+  `:position_deadband`. That read isn't optional and isn't the status poll, so
+  it happens whatever `:status_poll_interval_ms` is set to.
+
+  Velocity and effort aren't claimed. The servos report both, but the
+  controller doesn't read them and nothing puts them in a `JointState`.
+
   ## Operating modes
 
   A Dynamixel does one thing at a time, and `:mode` picks which. It's set once at
@@ -144,6 +157,9 @@ defmodule BB.Servo.Robotis.Actuator do
 
   # ETS tuple field index for command writes
   @ets_idx_pending_write 10
+
+  @impl BB.Actuator
+  def capabilities(_opts), do: [:position_feedback]
 
   @doc """
   Safety disarm callback.
