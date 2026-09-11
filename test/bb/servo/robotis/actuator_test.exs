@@ -17,6 +17,19 @@ defmodule BB.Servo.Robotis.ActuatorTest do
   @actuator_name :test_servo
   @controller_name :test_dynamixel
 
+  # The actuator monitors whatever the registry hands back, so every test that
+  # reaches `init/1` needs a live pid to point at. It can't be the test process:
+  # a process monitoring itself is a no-op in Erlang, and the monitor would
+  # silently never exist.
+  setup do
+    controller = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> Process.exit(controller, :kill) end)
+
+    stub(BB.Process, :whereis, fn _robot, _name -> controller end)
+
+    %{controller: controller}
+  end
+
   defp position_command(position, opts \\ []) do
     message_opts =
       [position: position * 1.0]
@@ -353,6 +366,52 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       ]
 
       assert {:stop, %JointConfigError{field: :effort}} = Actuator.init(opts)
+    end
+
+    test "monitors the controller it registered with", %{
+      servo_table: servo_table,
+      controller: controller
+    } do
+      stub_controller_success(servo_table)
+
+      opts = [
+        bb: default_bb_context(),
+        servo_id: 1,
+        controller: @controller_name,
+        motor_profile: motor_profile()
+      ]
+
+      assert {:ok, %{controller_ref: ref}} = Actuator.init(opts)
+
+      Process.exit(controller, :kill)
+
+      assert_receive {:DOWN, ^ref, :process, ^controller, :killed}
+    end
+  end
+
+  describe "a controller that goes down" do
+    setup do
+      %{state: state} = commanding_actuator()
+      {:ok, state: state}
+    end
+
+    test "stops the actuator so init/1 can re-establish it", %{state: state} do
+      state = %{state | controller_ref: ref = make_ref()}
+
+      assert {:stop, :controller_down, state} =
+               Actuator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+
+      # Both are the restarted controller's to hand out again.
+      assert is_nil(state.controller_ref)
+      assert is_nil(state.servo_table)
+    end
+
+    test "ignores a :DOWN for anything else", %{state: state} do
+      state = %{state | controller_ref: make_ref()}
+      unrelated = make_ref()
+
+      assert {:noreply, ^state} =
+               Actuator.handle_info({:DOWN, unrelated, :process, self(), :killed}, state)
     end
   end
 

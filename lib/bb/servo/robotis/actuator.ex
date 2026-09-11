@@ -21,6 +21,11 @@ defmodule BB.Servo.Robotis.Actuator do
   4. Writes `profile_velocity` from the joint's velocity limit
   5. Subscribes to the commands its mode admits
 
+  The registration is monitored. A restarted controller opens a new bus and a
+  new ETS table, and none of the setup above carries across, so the actuator
+  stops when its controller goes down and lets `init/1` run the whole sequence
+  again against the replacement.
+
   ## Position feedback
 
   A Dynamixel knows where it is, so this driver declares `:position_feedback`
@@ -175,8 +180,7 @@ defmodule BB.Servo.Robotis.Actuator do
          :ok <- disable_torque(state),
          {:ok, state} <- fetch_scales(state),
          {:ok, state} <- configure_mode(state),
-         {:ok, servo_table} <- register_servo(state),
-         state = Map.put(state, :servo_table, servo_table),
+         {:ok, state} <- register_servo(state),
          :ok <- write_profile_velocity(state) do
       {:ok, state}
     else
@@ -211,6 +215,8 @@ defmodule BB.Servo.Robotis.Actuator do
         bb: opts.bb,
         servo_id: opts.servo_id,
         controller: opts.controller,
+        controller_ref: nil,
+        servo_table: nil,
         position_deadband: Map.get(opts, :position_deadband, 2),
         mode: mode,
         expiry_action: Map.get(opts, :expiry_action, :stop),
@@ -378,13 +384,25 @@ defmodule BB.Servo.Robotis.Actuator do
     BBProcess.call(state.bb.robot, state.controller, {:read, state.servo_id, param})
   end
 
+  # The table belongs to the controller, and a restarted controller hands out a
+  # new one, so the actuator has no business outliving its registration. The
+  # monitor goes on after the call rather than before: a monitor on a pid that
+  # has already gone delivers `:DOWN` straight away, so nothing is missed.
   defp register_servo(state) do
-    BBProcess.call(
-      state.bb.robot,
-      state.controller,
-      {:register_servo, state.servo_id, state.bb.path, state.position_deadband}
-    )
+    controller = BBProcess.whereis(state.bb.robot, state.controller)
+
+    with {:ok, servo_table} <-
+           BBProcess.call(
+             state.bb.robot,
+             state.controller,
+             {:register_servo, state.servo_id, state.bb.path, state.position_deadband}
+           ) do
+      {:ok, %{state | controller_ref: monitor_controller(controller), servo_table: servo_table}}
+    end
   end
+
+  defp monitor_controller(pid) when is_pid(pid), do: Process.monitor(pid)
+  defp monitor_controller(:undefined), do: nil
 
   # `goal_velocity` has no effect in position mode — the speed of a position move
   # comes from `profile_velocity`, which defaults to 0, meaning "as fast as the
@@ -504,6 +522,14 @@ defmodule BB.Servo.Robotis.Actuator do
       :hold -> apply_and_reply(state, hold_write(state))
     end
   end
+
+  # Everything this actuator knows about its servo lives in the controller's ETS
+  # table, and the configuration that got it there — mode, scales, profile
+  # velocity — was written over a bus the controller has just dropped. Stopping
+  # puts `init/1` back in charge of re-establishing the lot against the
+  # replacement, rather than keeping a second recovery path in step with it.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{controller_ref: ref} = state),
+    do: {:stop, :controller_down, %{state | controller_ref: nil, servo_table: nil}}
 
   def handle_info(_message, state), do: {:noreply, state}
 
