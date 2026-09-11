@@ -21,6 +21,15 @@ defmodule BB.Servo.Robotis.Actuator do
   4. Writes `profile_velocity` from the joint's velocity limit
   5. Subscribes to the commands its mode admits
 
+  The registration is monitored. A restarted controller opens a new bus and a
+  new ETS table, and none of the setup above carries across, so the actuator
+  stops when its controller goes down and lets `init/1` run the whole sequence
+  again against the replacement.
+
+  Coming back up it races the controller, which has a port to open first, so a
+  controller that isn't registered yet is waited on for `:controller_grace`
+  before this actuator gives up and lets its supervisor try again.
+
   ## Position feedback
 
   A Dynamixel knows where it is, so this driver declares `:position_feedback`
@@ -106,6 +115,9 @@ defmodule BB.Servo.Robotis.Actuator do
         actuator :servo, {BB.Servo.Robotis.Actuator, servo_id: 1, controller: :dynamixel}
       end
   """
+  import BB.Unit
+  import BB.Unit.Option
+
   use BB.Actuator,
     options_schema: [
       servo_id: [
@@ -142,14 +154,32 @@ defmodule BB.Servo.Robotis.Actuator do
         backdrivable when nothing is asking it to move wants `:stop`.
         """,
         default: :stop
+      ],
+      controller_grace: [
+        type: unit_type(compatible: :second),
+        doc: """
+        How long to wait for a controller that isn't registered before giving
+        up and letting the supervisor restart this actuator.
+
+        Paid only when the controller is missing, which in practice means it
+        is restarting and this actuator is on its way back up too. The wait is
+        also what makes the joint supervisor's restart budget mean anything:
+        `Supervisor` re-runs a failed start with no backoff, so without it the
+        default three attempts are spent in well under a millisecond. Raise it
+        for a bus whose port is slow to open — a USB adapter re-enumerating
+        takes far longer than a built-in UART.
+        """,
+        default: ~u(100 millisecond)
       ]
     ]
 
+  alias BB.Error.Hardware.Robotis.ControllerUnavailable, as: ControllerUnavailableError
   alias BB.Error.Invalid.JointConfig, as: JointConfigError
   alias BB.Error.Invalid.Robotis.ServoMode, as: ServoModeError
   alias BB.Message
   alias BB.Message.Actuator.Command
   alias BB.Process, as: BBProcess
+  alias BB.Robot.Units
   alias BB.Servo.Robotis.Model
 
   @position_resolution 4096
@@ -172,11 +202,11 @@ defmodule BB.Servo.Robotis.Actuator do
   @impl BB.Actuator
   def init(opts) do
     with {:ok, state} <- build_state(opts),
+         :ok <- await_controller(state),
          :ok <- disable_torque(state),
          {:ok, state} <- fetch_scales(state),
          {:ok, state} <- configure_mode(state),
-         {:ok, servo_table} <- register_servo(state),
-         state = Map.put(state, :servo_table, servo_table),
+         {:ok, state} <- register_servo(state),
          :ok <- write_profile_velocity(state) do
       {:ok, state}
     else
@@ -211,6 +241,9 @@ defmodule BB.Servo.Robotis.Actuator do
         bb: opts.bb,
         servo_id: opts.servo_id,
         controller: opts.controller,
+        controller_grace_ms: milliseconds(Map.get(opts, :controller_grace, ~u(100 millisecond))),
+        controller_ref: nil,
+        servo_table: nil,
         position_deadband: Map.get(opts, :position_deadband, 2),
         mode: mode,
         expiry_action: Map.get(opts, :expiry_action, :stop),
@@ -378,13 +411,55 @@ defmodule BB.Servo.Robotis.Actuator do
     BBProcess.call(state.bb.robot, state.controller, {:read, state.servo_id, param})
   end
 
-  defp register_servo(state) do
-    BBProcess.call(
-      state.bb.robot,
-      state.controller,
-      {:register_servo, state.servo_id, state.bb.path, state.position_deadband}
-    )
+  # The table belongs to the controller, and a restarted controller hands out a
+  # new one, so the actuator has no business outliving its registration. The
+  # monitor goes on after the call rather than before: a monitor on a pid that
+  # has already gone delivers `:DOWN` straight away, so nothing is missed.
+  # Checked against the registry rather than the DSL: after a controller crash
+  # the name is still right and the process simply isn't there. Every call
+  # `init/1` goes on to make would exit `:noproc`, so it stops here — but not
+  # before pausing, because the supervisor retries a failed start with no
+  # backoff and would otherwise spend its whole budget before the controller's
+  # port was open.
+  defp await_controller(state) do
+    case BBProcess.whereis(state.bb.robot, state.controller) do
+      pid when is_pid(pid) ->
+        :ok
+
+      :undefined ->
+        Process.sleep(state.controller_grace_ms)
+
+        {:error,
+         %ControllerUnavailableError{
+           controller: state.controller,
+           actuator_path: state.bb.path,
+           waited_ms: state.controller_grace_ms
+         }}
+    end
   end
+
+  defp milliseconds(unit) do
+    unit
+    |> Localize.Unit.convert!(BB.Unit.unit_name(:millisecond))
+    |> Units.extract_float()
+    |> round()
+  end
+
+  defp register_servo(state) do
+    controller = BBProcess.whereis(state.bb.robot, state.controller)
+
+    with {:ok, servo_table} <-
+           BBProcess.call(
+             state.bb.robot,
+             state.controller,
+             {:register_servo, state.servo_id, state.bb.path, state.position_deadband}
+           ) do
+      {:ok, %{state | controller_ref: monitor_controller(controller), servo_table: servo_table}}
+    end
+  end
+
+  defp monitor_controller(pid) when is_pid(pid), do: Process.monitor(pid)
+  defp monitor_controller(:undefined), do: nil
 
   # `goal_velocity` has no effect in position mode — the speed of a position move
   # comes from `profile_velocity`, which defaults to 0, meaning "as fast as the
@@ -504,6 +579,14 @@ defmodule BB.Servo.Robotis.Actuator do
       :hold -> apply_and_reply(state, hold_write(state))
     end
   end
+
+  # Everything this actuator knows about its servo lives in the controller's ETS
+  # table, and the configuration that got it there — mode, scales, profile
+  # velocity — was written over a bus the controller has just dropped. Stopping
+  # puts `init/1` back in charge of re-establishing the lot against the
+  # replacement, rather than keeping a second recovery path in step with it.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{controller_ref: ref} = state),
+    do: {:stop, :controller_down, %{state | controller_ref: nil, servo_table: nil}}
 
   def handle_info(_message, state), do: {:noreply, state}
 

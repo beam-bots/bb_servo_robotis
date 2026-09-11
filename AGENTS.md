@@ -81,6 +81,17 @@ Bridge (GenServer) --reads/writes--> Controller --reads/writes--> Servo register
   torque where the joint is now resting; a no-op if it never went passive). Any command to a
   joint left passive by a `Stop` resumes on the way past, so callers needn't pair the two.
 
+  It monitors the controller it registered with and stops when that controller goes down.
+  The ETS table belongs to the controller, and the mode, scales and profile velocity it sets
+  up at startup were written over a bus the replacement reopens from scratch — so recovery
+  is `init/1` running again, not a second path that re-registers in place.
+
+  On the way back up it races the controller and loses, so `init/1` waits
+  `:controller_grace` (100ms by default) for an unregistered controller before failing.
+  That pause is also what gives the joint supervisor's restart budget any meaning:
+  `Supervisor` re-runs a failed start with no backoff, so three attempts otherwise take
+  about 30µs in total. Measured, not estimated — 20 failed restarts in 219µs.
+
   `:mode` fixes the servo's operating mode at startup and decides what
   `command_payloads/1` declares — position, velocity, current, or current-based position.
   Anything outside the mode's list is refused by the framework with
