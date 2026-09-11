@@ -6,7 +6,10 @@ defmodule BB.Servo.Robotis.ActuatorTest do
   use ExUnit.Case, async: true
   use Mimic
 
+  import BB.Unit
+
   alias BB.Actuator.MotorProfile
+  alias BB.Error.Hardware.Robotis.ControllerUnavailable, as: ControllerUnavailableError
   alias BB.Error.Invalid.JointConfig, as: JointConfigError
   alias BB.Error.Invalid.Robotis.ServoMode, as: ServoModeError
   alias BB.Message
@@ -366,6 +369,49 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       ]
 
       assert {:stop, %JointConfigError{field: :effort}} = Actuator.init(opts)
+    end
+
+    test "waits out the grace period when the controller isn't registered yet", %{
+      servo_table: servo_table
+    } do
+      stub_controller_success(servo_table)
+      stub(BB.Process, :whereis, fn _robot, _name -> :undefined end)
+
+      opts = [
+        bb: default_bb_context(),
+        servo_id: 1,
+        controller: @controller_name,
+        controller_grace: ~u(150 millisecond),
+        motor_profile: motor_profile()
+      ]
+
+      {elapsed, result} = :timer.tc(fn -> Actuator.init(opts) end)
+
+      assert {:stop, %ControllerUnavailableError{waited_ms: 150}} = result
+
+      # Without the pause the supervisor retries in microseconds and spends its
+      # whole budget before the controller's port is open.
+      assert elapsed >= 150_000
+    end
+
+    test "doesn't wait when the failure isn't the controller being absent", %{
+      servo_table: servo_table
+    } do
+      stub_controller_success(servo_table)
+
+      opts = [
+        bb: default_bb_context(),
+        servo_id: 1,
+        controller: @controller_name,
+        controller_grace: ~u(5 second),
+        mode: :current,
+        motor_profile: motor_profile()
+      ]
+
+      {elapsed, result} = :timer.tc(fn -> Actuator.init(opts) end)
+
+      assert {:stop, %JointConfigError{field: :effort}} = result
+      assert elapsed < 1_000_000
     end
 
     test "monitors the controller it registered with", %{
