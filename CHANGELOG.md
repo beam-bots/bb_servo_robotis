@@ -11,6 +11,15 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [v0.6.2](https://github.com/beam-bots/bb_servo_pca9685/compare/v0.6.1...v0.6.2) (2026-09-11)
+
+
+
+
+### Improvements:
+
+* actuator: stop when the controller registration dies (#119) by James Harton
+
 ## [v0.6.1](https://github.com/beam-bots/bb_servo_pca9685/compare/v0.6.0...v0.6.1) (2026-08-22)
 
 
