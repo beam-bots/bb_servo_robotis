@@ -23,7 +23,10 @@ this file covers only what's Robotis-specific.
    and carries a unique `servo_id` (1–253) on that bus.
 2. **Torque and disarm live on the controller, not the actuator.** The
    controller registers with `BB.Safety`, enables torque on arm, and disables
-   it on disarm/crash. The actuator's `disarm/1` is a deliberate no-op.
+   it on disarm/crash. The actuator's `disarm/1` is a deliberate no-op. The
+   servo list is read from the controller as the disarm runs, so a disarm that
+   arrives before any actuator has registered — during startup, or a topology
+   restart — fails rather than reporting an empty success.
 3. **No separate position sensor.** Dynamixels report their own position; the
    controller polls and publishes `BB.Message.Sensor.JointState`. Do not add a
    sensor for feedback — there is no `BB.Servo.Robotis.Sensor`.

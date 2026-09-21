@@ -26,6 +26,25 @@ defmodule BB.Servo.Robotis.ControllerTest do
     state
   end
 
+  defp disarm_opts(overrides \\ []) do
+    Keyword.merge(
+      [
+        robotis: self(),
+        robot: TestRobot,
+        name: @controller_name,
+        disarm_action: :disable_torque
+      ],
+      overrides
+    )
+  end
+
+  defp stub_live_servo_ids(servo_ids) do
+    expect(BB.Process, :call, fn TestRobot, @controller_name, :list_servos, timeout ->
+      assert is_integer(timeout)
+      {:ok, servo_ids}
+    end)
+  end
+
   defp validate_options(opts) do
     Spark.Options.validate([port: "/dev/ttyUSB0"] ++ opts, Controller.options_schema())
   end
@@ -139,6 +158,12 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert_receive {:safety_registered, Controller, safety_opts}
       assert safety_opts[:robot] == TestRobot
       assert safety_opts[:path] == [@controller_name]
+
+      disarm_opts = Keyword.get(safety_opts, :opts)
+      assert disarm_opts[:robotis] == self()
+      assert disarm_opts[:robot] == TestRobot
+      assert disarm_opts[:name] == @controller_name
+      assert disarm_opts[:disarm_action] == :disable_torque
     end
 
     test "raises when port not provided" do
@@ -230,8 +255,6 @@ defmodule BB.Servo.Robotis.ControllerTest do
     end
 
     test "register_servo inserts into ETS and returns table ref", %{state: state} do
-      stub(BB.Safety, :register, fn _module, _opts -> :ok end)
-
       {:reply, {:ok, table}, state} =
         Controller.handle_call({:register_servo, 1, [:joint1, :servo], 2}, self(), state)
 
@@ -248,9 +271,14 @@ defmodule BB.Servo.Robotis.ControllerTest do
       assert torque_enabled == false
     end
 
-    test "list_servos returns registered servo IDs", %{state: state} do
-      stub(BB.Safety, :register, fn _module, _opts -> :ok end)
+    test "register_servo does not re-register the safety handler", %{state: state} do
+      reject(&BB.Safety.register/2)
 
+      assert {:reply, {:ok, _table}, _state} =
+               Controller.handle_call({:register_servo, 1, [:joint1, :servo], 2}, self(), state)
+    end
+
+    test "list_servos returns registered servo IDs", %{state: state} do
       {:reply, {:ok, _table}, state} =
         Controller.handle_call({:register_servo, 1, [:joint1, :servo], 2}, self(), state)
 
@@ -480,46 +508,65 @@ defmodule BB.Servo.Robotis.ControllerTest do
   end
 
   describe "disarm/1" do
-    test "disables torque on all registered servos with acknowledged writes" do
+    test "disables torque on every servo the controller currently knows" do
       test_pid = self()
       robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+
+      stub_live_servo_ids([1, 2, 3])
 
       expect(Robotis, :write, 3, fn ^robotis_pid, id, :torque_enable, false, true ->
         send(test_pid, {:write, id})
         :ok
       end)
 
-      opts = [robotis: robotis_pid, servo_ids: [1, 2, 3]]
-      assert :ok = Controller.disarm(opts)
+      assert :ok = Controller.disarm(disarm_opts(robotis: robotis_pid))
 
       assert_receive {:write, 1}
       assert_receive {:write, 2}
       assert_receive {:write, 3}
     end
 
-    test "returns ok when no servos registered" do
-      robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
+    test "returns an error when no servos are registered yet" do
+      stub_live_servo_ids([])
       reject(&Robotis.write/5)
-      opts = [robotis: robotis_pid, servo_ids: []]
-      assert :ok = Controller.disarm(opts)
+
+      assert {:error, :no_servos_registered} = Controller.disarm(disarm_opts())
+    end
+
+    test "returns an error when the controller is unreachable" do
+      start_supervised!({Registry, keys: :unique, name: BB.Process.registry_name(TestRobot)})
+      reject(&Robotis.write/5)
+
+      assert {:error, {:exit, _reason}} = Controller.disarm(disarm_opts())
+    end
+
+    test "returns :ok with the :hold action without asking for the servo list" do
+      reject(&BB.Process.call/4)
+      reject(&Robotis.write/5)
+
+      assert :ok = Controller.disarm(disarm_opts(disarm_action: :hold))
     end
 
     test "returns an error when a torque-disable write is rejected" do
       robotis_pid = spawn(fn -> :timer.sleep(:infinity) end)
 
+      stub_live_servo_ids([1, 2, 3])
+
       stub(Robotis, :write, fn ^robotis_pid, id, :torque_enable, false, true ->
         if id == 2, do: {:error, :timeout}, else: :ok
       end)
 
-      opts = [robotis: robotis_pid, servo_ids: [1, 2, 3]]
-      assert {:error, {:servo, 2, :torque_enable, :timeout}} = Controller.disarm(opts)
+      assert {:error, {:servo, 2, :torque_enable, :timeout}} =
+               Controller.disarm(disarm_opts(robotis: robotis_pid))
     end
 
     test "returns an error when the process is not alive" do
       dead_pid = spawn(fn -> :ok end)
       Process.sleep(10)
-      opts = [robotis: dead_pid, servo_ids: [1]]
-      assert {:error, {:exit, _reason}} = Controller.disarm(opts)
+
+      stub_live_servo_ids([1])
+
+      assert {:error, {:exit, _reason}} = Controller.disarm(disarm_opts(robotis: dead_pid))
     end
   end
 
