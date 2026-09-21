@@ -79,6 +79,15 @@ defmodule BB.Servo.Robotis.Controller do
   servo IDs using acknowledged per-servo writes, so `disarm/1` only reports `:ok`
   once the bus has confirmed every servo is safe; any failed or undeliverable
   write returns `{:error, reason}` and drives the robot into the `:error` state.
+
+  The handler is registered once, at init, and asks this process for its servo
+  list when it runs. Actuators register with the controller as they start, so a
+  list captured at registration time would be a prefix of the real one, and a
+  disarm landing during startup or a topology restart would write to that prefix
+  and still report success. A disarm that can't reach the controller, or reaches
+  one with no servos registered yet, is an error rather than an empty success:
+  both mean "I don't know what I'm responsible for", which the safety controller
+  needs to hear so the robot stays in `:error`.
   """
   use BB.Controller,
     options_schema: [
@@ -142,6 +151,8 @@ defmodule BB.Servo.Robotis.Controller do
   @voltage_low_threshold 10.0
   @voltage_high_threshold 14.0
 
+  @disarm_servo_list_timeout_ms 1_000
+
   @doc false
   @spec validate_control_table(term()) :: {:ok, module()} | {:error, String.t()}
   def validate_control_table(Robotis.ControlTable.XL320) do
@@ -171,7 +182,9 @@ defmodule BB.Servo.Robotis.Controller do
   Handle disarm based on the configured `disarm_action`.
 
   Called by `BB.Safety.Controller` when the robot is disarmed or crashes.
-  By default, disables torque on all registered servo IDs.
+  By default, disables torque on every servo the controller currently knows
+  about, read from the controller as the callback runs rather than captured when
+  the handler registered.
   """
   @impl BB.Controller
   def disarm(opts) do
@@ -183,12 +196,27 @@ defmodule BB.Servo.Robotis.Controller do
 
   defp do_disarm(:disable_torque, opts) do
     robotis = Keyword.fetch!(opts, :robotis)
-    servo_ids = Keyword.get(opts, :servo_ids, [])
 
     try do
-      disable_torque(robotis, servo_ids)
+      with {:ok, servo_ids} <- live_servo_ids(opts) do
+        disable_torque(robotis, servo_ids)
+      end
     catch
       :exit, reason -> {:error, {:exit, reason}}
+    end
+  end
+
+  # `BB.Safety.Controller` runs disarm callbacks in a task of their own with a
+  # timeout, so calling back into the controller is safe — but it has to leave
+  # enough of that budget for the bus writes that follow.
+  defp live_servo_ids(opts) do
+    robot = Keyword.fetch!(opts, :robot)
+    name = Keyword.fetch!(opts, :name)
+
+    case BB.Process.call(robot, name, :list_servos, @disarm_servo_list_timeout_ms) do
+      {:ok, []} -> {:error, :no_servos_registered}
+      {:ok, servo_ids} -> {:ok, servo_ids}
+      other -> {:error, {:servo_list_unavailable, other}}
     end
   end
 
@@ -238,7 +266,12 @@ defmodule BB.Servo.Robotis.Controller do
         BB.Safety.register(__MODULE__,
           robot: state.bb.robot,
           path: state.bb.path,
-          opts: [robotis: state.robotis, servo_ids: [], disarm_action: state.disarm_action]
+          opts: [
+            robotis: state.robotis,
+            robot: state.bb.robot,
+            name: state.name,
+            disarm_action: state.disarm_action
+          ]
         )
 
         BB.subscribe(state.bb.robot, [:state_machine])
@@ -284,16 +317,6 @@ defmodule BB.Servo.Robotis.Controller do
     })
 
     servo_ids = [servo_id | state.servo_ids] |> Enum.sort() |> Enum.uniq()
-
-    BB.Safety.register(__MODULE__,
-      robot: state.bb.robot,
-      path: state.bb.path,
-      opts: [
-        robotis: state.robotis,
-        servo_ids: servo_ids,
-        disarm_action: state.disarm_action
-      ]
-    )
 
     {:reply, {:ok, state.servo_table}, %{state | servo_ids: servo_ids}}
   end
