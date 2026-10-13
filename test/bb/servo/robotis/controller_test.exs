@@ -561,8 +561,8 @@ defmodule BB.Servo.Robotis.ControllerTest do
     end
 
     test "returns an error when the process is not alive" do
-      dead_pid = spawn(fn -> :ok end)
-      Process.sleep(10)
+      {dead_pid, ref} = spawn_monitor(fn -> :ok end)
+      assert_receive {:DOWN, ^ref, :process, ^dead_pid, _reason}
 
       stub_live_servo_ids([1])
 

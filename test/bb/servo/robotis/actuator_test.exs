@@ -534,6 +534,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
         :ok
       end)
 
+      before = System.monotonic_time(:millisecond)
       Actuator.handle_command(position_command(0.5), state)
 
       assert_receive {:published, TestRobot, [@joint_name, @actuator_name], opts}
@@ -541,24 +542,25 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       assert opts[:initial_position] == 0.0
       assert opts[:target_position] == 0.5
       assert is_integer(opts[:expected_arrival])
-      assert opts[:expected_arrival] > System.monotonic_time(:millisecond)
+      assert opts[:expected_arrival] >= before + round(0.5 / 1.0 * 1000)
     end
 
     test "calculates expected arrival based on velocity", %{state: state} do
       test_pid = self()
 
       expect(BB.Actuator, :publish_begin_motion, fn _robot, _path, opts ->
-        send(test_pid, {:arrival, opts[:expected_arrival]})
+        send(test_pid, {:arrival, opts[:expected_arrival], System.monotonic_time(:millisecond)})
         :ok
       end)
 
       before = System.monotonic_time(:millisecond)
       Actuator.handle_command(position_command(1.0), state)
 
-      assert_receive {:arrival, expected_arrival}
+      assert_receive {:arrival, expected_arrival, published_at}
 
       travel_time_ms = round(1.0 / 1.0 * 1000)
-      assert_in_delta expected_arrival, before + travel_time_ms, 50
+      assert expected_arrival >= before + travel_time_ms
+      assert expected_arrival <= published_at + travel_time_ms
     end
   end
 
@@ -841,7 +843,7 @@ defmodule BB.Servo.Robotis.ActuatorTest do
       {:noreply, state} = Actuator.handle_command(velocity_command(1.0), state)
 
       assert state.expiry_timer == nil
-      refute_receive {:expire_command, _}, 50
+      refute_received {:expire_command, _}
     end
   end
 end
